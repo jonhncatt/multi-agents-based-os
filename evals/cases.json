@@ -288,6 +288,20 @@
     }
   },
   {
+    "name": "helper_inline_xml_not_forced_into_evidence_mode",
+    "kind": "helper",
+    "helper": "_requires_evidence_mode",
+    "args": {
+      "user_message": "请根据我贴的 XML 原文解释它的结构，不要只复述。\n<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed>\n  <title>Example Feed</title>\n  <entry>\n    <title>Atom-Powered Robots Run Amok</title>\n    <summary>Some text about robots.</summary>\n  </entry>\n</feed>",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": false
+      }
+    }
+  },
+  {
     "name": "helper_small_atom_attachment_does_not_force_tools",
     "kind": "helper",
     "helper": "_request_likely_requires_tools",
@@ -301,6 +315,20 @@
           "size": 1024
         }
       ]
+    },
+    "assert": {
+      "equals": {
+        "result": false
+      }
+    }
+  },
+  {
+    "name": "helper_inline_xml_does_not_force_tools",
+    "kind": "helper",
+    "helper": "_request_likely_requires_tools",
+    "args": {
+      "user_message": "请分析这段 XML 文本。\n<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed>\n  <title>Example Feed</title>\n  <entry>\n    <title>Atom-Powered Robots Run Amok</title>\n    <summary>Some text about robots.</summary>\n  </entry>\n</feed>",
+      "attachment_metas": []
     },
     "assert": {
       "equals": {
@@ -340,6 +368,29 @@
     }
   },
   {
+    "name": "helper_route_rules_inline_xml_understanding",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "请根据我贴的 XML 原文解释内容。\n<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed>\n  <title>Example Feed</title>\n  <entry>\n    <title>Atom-Powered Robots Run Amok</title>\n    <summary>Some text about robots.</summary>\n  </entry>\n</feed>",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "inline_document_understanding",
+        "specialists.0": "summarizer",
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_structurer": false
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_web_research",
     "kind": "helper",
     "helper": "_route_request_by_rules",
@@ -359,6 +410,36 @@
         "use_worker_tools": true,
         "use_reviewer": true,
         "use_web_prefetch": true
+      }
+    }
+  },
+  {
+    "name": "helper_sanitize_final_answer_removes_internal_meta_for_inline_xml",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "当前处于evidence_required_mode=true,且 reviewer_verdict=block，由于你仅提供了xml文本内容，没有提供可供工具读取或搜索的本地文件路径，我无法进行可复核的解析。请提供路径。",
+      "user_message": "请分析这段 XML 文本。\n<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed>\n  <title>Example Feed</title>\n  <entry>\n    <title>Atom-Powered Robots Run Amok</title>\n    <summary>Some text about robots.</summary>\n  </entry>\n</feed>",
+      "attachment_metas": []
+    },
+    "assert": {
+      "contains": {
+        "result": [
+          "不需要额外提供本地文件路径"
+        ]
+      },
+      "not_contains": {
+        "result": [
+          "evidence_required_mode",
+          "reviewer_verdict",
+          "本地文件路径，我无法进行可复核的解析"
+        ]
+      },
+      "contains_any": {
+        "result": [
+          "解释的结构",
+          "字段或结论"
+        ]
       }
     }
   },
