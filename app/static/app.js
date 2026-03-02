@@ -59,6 +59,7 @@ const LLM_FLOW_STAGE_LABELS = {
   backend_warning: "后端告警",
   backend_pricing: "计费处理",
   multi_agent_planner: "Planner",
+  multi_agent_worker: "Worker",
   multi_agent_reviewer: "Reviewer",
   multi_agent_revision: "Revision",
 };

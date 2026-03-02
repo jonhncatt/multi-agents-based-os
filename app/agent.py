@@ -456,6 +456,17 @@ class OfficeAgent:
             )
 
         add_debug(
+            stage="multi_agent_worker",
+            title="Worker 开始执行",
+            detail=(
+                f"requested_model={requested_model}\n"
+                f"execution_mode={requested_execution_mode}\n"
+                f"enable_tools={settings.enable_tools}\n"
+                f"attachments={len(attachment_metas)}\n"
+                f"history_turns_used={min(len(history_turns), settings.max_context_turns)}"
+            ),
+        )
+        add_debug(
             stage="backend_to_llm",
             title="后端 -> LLM 请求",
             detail=(
@@ -700,6 +711,16 @@ class OfficeAgent:
         if prefetch_payload:
             worker_bullets.append(f"自动预搜索: {prefetch_payload.get('count', 0)} 条")
         add_panel("worker", "Worker", "主执行 Agent 已完成取证、工具调用与作答。", worker_bullets)
+        add_debug(
+            stage="multi_agent_worker",
+            title="Worker 执行完成",
+            detail=(
+                f"effective_model={effective_model}\n"
+                f"tool_events={len(tool_events)}\n"
+                f"text_chars={len(text)}\n"
+                f"text_preview={self._shorten(text, 1200 if not debug_raw else 50000)}"
+            ),
+        )
         add_debug(
             stage="llm_final",
             title="LLM 最终输出",
