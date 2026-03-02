@@ -170,6 +170,15 @@ def _assertions(payload: dict[str, Any], spec: dict[str, Any]) -> list[str]:
         if not any(str(snippet) in actual for snippet in snippets):
             errors.append(f"{path}: missing any of {snippets!r}")
 
+    for path, snippets in (spec.get("not_contains") or {}).items():
+        actual = get_value(path)
+        if actual is missing:
+            continue
+        actual = str(actual)
+        for snippet in snippets:
+            if str(snippet) in actual:
+                errors.append(f"{path}: unexpectedly contains {snippet!r}")
+
     return errors
 
 

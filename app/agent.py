@@ -83,6 +83,16 @@ _UNDERSTANDING_HINTS = (
     "overview",
 )
 
+_INLINE_DOC_CODE_FENCE_HINTS = (
+    "```xml",
+    "```html",
+    "```json",
+    "```yaml",
+    "```yml",
+    "```rss",
+    "```atom",
+)
+
 _SPECIALIST_LABELS = {
     "researcher": "Researcher",
     "file_reader": "FileReader",
@@ -445,6 +455,10 @@ class OfficeAgent:
                     "当用户要求查看/分析/改写文件时，默认已授权你直接读取相关文件并连续执行，不要逐步询问“要不要继续读下一步”。\n"
                     "分块读取大文件时，应在同一轮里自动继续调用 read_text_file(start_char, max_chars) 直到信息足够或达到安全上限，"
                     "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
+                    "如果用户直接在消息里粘贴了 XML/HTML/JSON/YAML 等原始长文本，"
+                    "应把它当作当前上下文中的 inline 文档直接分析，"
+                    "不要因为它不在本地文件系统就要求用户提供文件路径；"
+                    "只有当用户明确要求对磁盘文件做可复核检索时，才需要本地路径和文件工具。\n"
                     "默认不要向用户逐步播报内部工具执行过程（例如“正在自动写入/继续分块写入/继续读取”）；"
                     "除非用户明确要求过程日志，否则直接给最终结果和必要说明。\n"
                     "对于纯知识问答（不需要读写文件或联网抓取），直接回答问题本身；"
@@ -1288,6 +1302,11 @@ class OfficeAgent:
         else:
             add_trace("Router 已跳过 Conflict Detector / Reviewer / Revision。")
 
+        text = self._sanitize_final_answer_text(
+            text,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+        )
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
         if not route.get("use_structurer"):
             return (
@@ -1838,6 +1857,8 @@ class OfficeAgent:
                     "如果 reviewer_verdict=block，才应把最终答复改成更保守或更明确要求继续取证的版本。"
                     "如果当前答复已经足够好，可以保持原文不变。"
                     "禁止引入新的未经工具或上下文支持的事实。"
+                    "最终输出绝不能暴露内部控制变量或流程字段，"
+                    "例如 reviewer_verdict、reviewer_confidence、evidence_required_mode、task_mode。"
                     "如果 Reviewer 指出与通识或领域知识存在明显冲突，而工具证据又不足，"
                     "你应把最终答复改成更保守的表述，例如说明当前证据不足、需要继续核对原文，"
                     "而不是继续维持一个可疑的确定性结论。"
@@ -1883,6 +1904,40 @@ class OfficeAgent:
         except Exception as exc:
             fallback["notes"] = [f"Revision 调用失败，已保留原答复: {self._shorten(exc, 180)}"]
             return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _sanitize_final_answer_text(
+        self,
+        text: str,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+    ) -> str:
+        original = str(text or "").strip()
+        if not original:
+            return original
+
+        cleaned = original
+        had_internal_meta = bool(
+            re.search(r"(?i)\b(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)\b", original)
+        )
+        cleaned = re.sub(r"(?im)^.*\b(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)\b.*$", "", cleaned)
+        cleaned = re.sub(
+            r"(?is)(?:^|[。；\n])[^。；\n]*(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)[^。；\n]*[。；]?",
+            "",
+            cleaned,
+        )
+
+        if not attachment_metas and self._looks_like_inline_document_payload(user_message):
+            cleaned = re.sub(r"(?is)[^。；\n]*(?:本地文件路径|文件路径|磁盘文件)[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*无法进行可复核的解析[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*请(?:提供|给出|上传).{0,40}路径[^。；\n]*[。；]?", "", cleaned)
+
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        if not cleaned:
+            if not attachment_metas and self._looks_like_inline_document_payload(user_message) and had_internal_meta:
+                return "已按你直接粘贴的原始文本内容理解，不需要额外提供本地文件路径。请继续指定你要我解释的结构、字段或结论。"
+            return original
+        return cleaned
 
     def _run_answer_structurer(
         self,
@@ -2974,6 +3029,8 @@ class OfficeAgent:
             return False
         if any(hint in text for hint in _NEWS_HINTS):
             return False
+        if self._looks_like_inline_document_payload(user_message):
+            return True
         if self._requires_evidence_mode(user_message, []):
             return False
         tool_markers = (
@@ -2989,6 +3046,30 @@ class OfficeAgent:
         if any(marker in text for marker in tool_markers):
             return False
         return any(hint in text for hint in _UNDERSTANDING_HINTS)
+
+    def _looks_like_inline_document_payload(self, user_message: str) -> bool:
+        text = str(user_message or "").strip()
+        if len(text) < 120:
+            return False
+        lowered = text.lower()
+        if "<?xml" in lowered:
+            return True
+        if any(marker in lowered for marker in _INLINE_DOC_CODE_FENCE_HINTS):
+            return True
+
+        xml_tag_matches = re.findall(r"</?[a-zA-Z_][\w:.-]*(?:\s[^<>]{0,200})?>", text)
+        if len(xml_tag_matches) >= 6 and ("\n" in text or len(text) >= 240):
+            return True
+
+        json_key_count = len(re.findall(r'"[^"\n]{1,80}"\s*:', text))
+        if json_key_count >= 4 and len(text) >= 180:
+            return True
+
+        yaml_key_count = len(re.findall(r"(?m)^[A-Za-z0-9_.-]{1,60}:\s+\S", text))
+        if yaml_key_count >= 5 and len(text) >= 180:
+            return True
+
+        return False
 
     def _attachment_is_inline_parseable(self, meta: dict[str, Any]) -> bool:
         suffix = str(meta.get("suffix") or "").strip().lower()
@@ -3093,6 +3174,7 @@ class OfficeAgent:
         inline_parseable_attachments = has_attachments and all(
             self._attachment_is_inline_parseable(meta) for meta in attachment_metas
         )
+        inline_document_payload = self._looks_like_inline_document_payload(user_message)
         understanding_request = self._looks_like_understanding_request(user_message)
         web_request = (
             any(hint in text for hint in _NEWS_HINTS)
@@ -3175,6 +3257,26 @@ class OfficeAgent:
                     "specialists": ["summarizer"],
                     "reason": "rules_small_parseable_attachment_understanding",
                     "summary": "小型可解析附件的理解任务，直接由 Worker 作答。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if not has_attachments and inline_document_payload and not request_requires_tools:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "inline_document_understanding",
+                    "complexity": "low",
+                    "use_planner": False,
+                    "use_worker_tools": False,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["summarizer"],
+                    "reason": "rules_inline_document_payload_understanding",
+                    "summary": "检测到用户直接粘贴的原始长文本，按 inline 文档直接理解，不要求文件路径。",
                 },
                 fallback=fallback,
                 settings=settings,
@@ -3361,6 +3463,12 @@ class OfficeAgent:
                 "本轮属于简单理解任务。"
                 "直接基于当前消息与已内联附件内容回答。"
                 "不要调用工具，不要输出流程说明，不要把回答改写成证据审计格式。"
+            )
+        if task_type == "inline_document_understanding":
+            return (
+                "本轮属于 inline 文档理解任务。"
+                "用户已经直接提供了原始文本内容，应直接基于该文本分析。"
+                "不要要求本地文件路径，不要引用内部审阅变量，不要改写成证据审计格式。"
             )
         if task_type == "simple_qa":
             return "本轮属于简单问答。直接回答，不要调用工具，不要追加多余审阅话术。"
@@ -4435,6 +4543,8 @@ class OfficeAgent:
         text = (user_message or "").strip().lower()
         if not text:
             return False
+        if not attachment_metas and self._looks_like_inline_document_payload(user_message):
+            return False
         hints = (
             "spec",
             "specification",
@@ -4539,6 +4649,8 @@ class OfficeAgent:
             return True
         text = (user_message or "").strip().lower()
         if not text:
+            return False
+        if not attachment_metas and self._looks_like_inline_document_payload(user_message):
             return False
         if "http://" in text or "https://" in text:
             return True
