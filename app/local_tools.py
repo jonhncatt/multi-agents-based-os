@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import re
 import shlex
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig
+from app.document_text import extract_pdf_text_from_bytes
 from app.sandbox import DockerSandboxManager
 
 
@@ -480,26 +480,69 @@ def _is_cert_verify_error(exc: Exception) -> bool:
     return "certificate_verify_failed" in text or "certificate verify failed" in text
 
 
-def _extract_pdf_text_from_bytes(raw_pdf: bytes, max_chars: int) -> str:
-    from pypdf import PdfReader  # lazy import
+def _normalize_search_query(query: str) -> str:
+    return re.sub(r"\s+", " ", (query or "").strip())
 
-    reader = PdfReader(io.BytesIO(raw_pdf))
-    chunks: list[str] = []
-    total = 0
-    limit = max(512, int(max_chars))
-    for idx, page in enumerate(reader.pages, start=1):
-        part = page.extract_text() or ""
-        block = f"\n--- Page {idx} ---\n{part}\n"
-        if not block.strip():
+
+def _expand_search_variants(query: str) -> list[str]:
+    normalized = _normalize_search_query(query)
+    if not normalized:
+        return []
+
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        clean = _normalize_search_query(value)
+        key = clean.lower()
+        if not clean or key in seen:
+            return
+        seen.add(key)
+        variants.append(clean)
+
+    add(normalized)
+
+    hex_patterns = list(re.finditer(r"(?i)\b(?:0x([0-9a-f]{1,4})|([0-9a-f]{1,4})h)\b", normalized))
+    for match in hex_patterns:
+        digits = (match.group(1) or match.group(2) or "").upper()
+        if not digits:
             continue
-        chunks.append(block)
-        total += len(block)
-        if total >= limit:
+        token_variants = [f"{digits}h", f"{digits} h", f"0x{digits}"]
+        for token in token_variants:
+            add(token)
+            replaced = normalized[: match.start()] + token + normalized[match.end() :]
+            add(replaced)
+
+    return variants
+
+
+def _build_search_pattern(query: str) -> re.Pattern[str] | None:
+    normalized = _normalize_search_query(query)
+    if not normalized:
+        return None
+    parts = [re.escape(part) for part in normalized.split(" ") if part]
+    if not parts:
+        return None
+    body = r"\s+".join(parts)
+    if len(parts) == 1 and re.fullmatch(r"(?i)(?:0x)?[0-9a-f]{1,4}h?", normalized):
+        body = rf"(?<![0-9A-F]){body}(?![0-9A-F])"
+    return re.compile(body, flags=re.IGNORECASE)
+
+
+def _page_hint_for_offset(text: str, offset: int) -> int | None:
+    page = None
+    for match in re.finditer(r"--- Page (\d+) ---", text):
+        if match.start() > offset:
             break
-    text = "".join(chunks).strip()
-    if len(text) > limit:
-        text = text[:limit]
-    return text
+        try:
+            page = int(match.group(1))
+        except Exception:
+            page = None
+    return page
+
+
+def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
 
 
 def _safe_filename(name: str) -> str:
@@ -627,6 +670,25 @@ class LocalToolExecutor:
                         "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
                     },
                     "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "search_text_in_file",
+                "description": (
+                    "Search within a local text/document file and return matching evidence snippets. "
+                    "For PDF/DOCX/MSG/XLSX it searches extracted text and automatically expands hex variants like 15h/15 h/0x15."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "query": {"type": "string"},
+                        "max_matches": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
+                        "context_chars": {"type": "integer", "minimum": 40, "maximum": 2000, "default": 280},
+                    },
+                    "required": ["path", "query"],
                     "additionalProperties": False,
                 },
             },
@@ -847,6 +909,8 @@ class LocalToolExecutor:
             return self.list_directory(**arguments)
         if name == "read_text_file":
             return self.read_text_file(**arguments)
+        if name == "search_text_in_file":
+            return self.search_text_in_file(**arguments)
         if name == "copy_file":
             return self.copy_file(**arguments)
         if name == "extract_zip":
@@ -1154,6 +1218,77 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
+
+    def search_text_in_file(
+        self,
+        path: str,
+        query: str,
+        max_matches: int = 8,
+        context_chars: int = 280,
+    ) -> dict[str, Any]:
+        try:
+            normalized_query = _normalize_search_query(query)
+            if not normalized_query:
+                return {"ok": False, "error": "query is empty"}
+
+            base = self.read_text_file(path=path, start_char=0, max_chars=1_000_000)
+            if not bool(base.get("ok")):
+                return base
+
+            text = str(base.get("content") or "")
+            variants = _expand_search_variants(normalized_query)
+            limit = max(1, min(20, int(max_matches)))
+            window = max(40, min(2000, int(context_chars)))
+            seen_spans: list[tuple[int, int]] = []
+            matches: list[dict[str, Any]] = []
+
+            for variant in variants:
+                pattern = _build_search_pattern(variant)
+                if pattern is None:
+                    continue
+                for found in pattern.finditer(text):
+                    span = found.span()
+                    if any(_spans_overlap(span, prior) for prior in seen_spans):
+                        continue
+                    seen_spans.append(span)
+
+                    start = max(0, span[0] - window)
+                    end = min(len(text), span[1] + window)
+                    page_hint = _page_hint_for_offset(text, span[0])
+                    matches.append(
+                        {
+                            "query_variant": variant,
+                            "matched_text": found.group(0),
+                            "start_char": span[0],
+                            "end_char": span[1],
+                            "page_hint": page_hint,
+                            "context": text[start:end].strip(),
+                            "read_hint": {
+                                "start_char": max(0, span[0] - 2000),
+                                "max_chars": 6000,
+                            },
+                        }
+                    )
+                    if len(matches) >= limit:
+                        break
+                if len(matches) >= limit:
+                    break
+
+            return {
+                "ok": True,
+                "path": str(base.get("path") or path),
+                "source_format": base.get("source_format") or "text_utf8",
+                "query": normalized_query,
+                "searched_variants": variants,
+                "match_count": len(matches),
+                "matches": matches,
+                "note": (
+                    "Search was run over extracted document text. "
+                    "If match_count=0, only conclude that the current extracted text did not show a hit."
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"search_text_in_file failed: {exc}"}
 
     def copy_file(
         self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -59,6 +60,13 @@ class ReadTextFileArgs(BaseModel):
     path: str
     start_char: int = Field(default=0, ge=0)
     max_chars: int = Field(default=200000, ge=128, le=1000000)
+
+
+class SearchTextInFileArgs(BaseModel):
+    path: str
+    query: str
+    max_matches: int = Field(default=8, ge=1, le=20)
+    context_chars: int = Field(default=280, ge=40, le=2000)
 
 
 class CopyFileArgs(BaseModel):
@@ -316,10 +324,14 @@ class OfficeAgent:
                     f"可访问路径根目录: {allowed_roots_text}\n"
                     "读取文件优先使用 list_directory/read_text_file；"
                     "read_text_file 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
+                    "当用户在规范/协议/规格书中定位章节、命令码、opcode、寄存器或状态码时，优先使用 search_text_in_file；"
+                    "search_text_in_file 会自动尝试 15h/15 h/0x15 这类十六进制变体；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
                     "应先调用 read_text_file(path=..., start_char=0, max_chars=1000000)，"
                     "若 has_more=true 再自动续读后续分块，不要把“是否继续读取”抛回给用户；"
+                    "对于规范/规格书问答，必须先给出命中证据（页码/章节/片段）再下结论；"
+                    "若当前提取文本未命中，只能说“在当前提取文本中未定位到”，不得直接断言规范不存在该命令或条目；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "解压 zip 文件优先使用 extract_zip；"
                     "当用户要求“打开/读取/解析 .msg 邮件里的附件”时，优先调用 extract_msg_attachments(msg_path=...)；"
@@ -401,6 +413,21 @@ class OfficeAgent:
             add_trace(f"已处理 {len(attachment_metas)} 个附件输入。")
         for issue in attachment_issues:
             add_trace(f"附件提示: {issue}")
+        spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
+        if spec_lookup_request:
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "本轮属于规范/规格书定位任务。"
+                        "先用 search_text_in_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
+                        "必要时分别尝试章节关键词和 15h/15 h/0x15 这类十六进制变体；"
+                        "再用 read_text_file 读取命中附近上下文；"
+                        "最终回答必须附带命中证据。"
+                        "若未命中，只能说当前提取文本未定位到，不得直接断言规范不存在。"
+                    )
+                )
+            )
+            add_trace("已启用规范文档检索模式。")
 
         planner_request_detail = "\n".join(
             [
@@ -550,6 +577,58 @@ class OfficeAgent:
         for _ in range(24):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not settings.enable_tools or not tool_calls:
+                if (
+                    settings.enable_tools
+                    and spec_lookup_request
+                    and auto_nudge_budget > 0
+                    and self._spec_lookup_needs_more_evidence(
+                        ai_msg=ai_msg,
+                        tool_events=tool_events,
+                    )
+                ):
+                    auto_nudge_budget -= 1
+                    add_trace("检测到规范检索取证不足，后端已要求 Worker 继续检索并精读命中上下文。")
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：补足规范检索证据",
+                        detail="规范/规格书问题尚未形成 search + read 证据链，已追加指令要求继续取证。",
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "当前仍处于规范/规格书定位任务。"
+                                "请不要直接下结论。"
+                                "若尚未调用 search_text_in_file，请先对章节名、命令码、opcode、寄存器名做检索；"
+                                "若已命中，请继续调用 read_text_file 读取命中附近上下文并基于证据回答。"
+                                "最终答案必须包含命中片段、页码提示或章节提示。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg, runner, effective_model, failover_notes = self._invoke_with_runner_recovery(
+                            runner=runner,
+                            messages=messages,
+                            model=effective_model,
+                            max_output_tokens=settings.max_output_tokens,
+                            enable_tools=settings.enable_tools,
+                        )
+                        for note in failover_notes:
+                            add_trace(note)
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        add_debug(
+                            stage="llm_to_backend",
+                            title="Worker -> 后端编排器（规范取证补强后响应）",
+                            detail=(
+                                f"effective_model={effective_model}\n"
+                                f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
+                            ),
+                        )
+                        continue
+                    except Exception as exc:
+                        add_trace(f"规范取证补强后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 规范取证补强失败", detail=str(exc))
+                        break
                 if (
                     settings.enable_tools
                     and auto_nudge_budget > 0
@@ -775,6 +854,7 @@ class OfficeAgent:
             planner_brief=planner_brief,
             tool_events=tool_events,
             execution_trace=execution_trace,
+            spec_lookup_request=spec_lookup_request,
         )
         reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
         if reviewer_effective_model:
@@ -943,6 +1023,7 @@ class OfficeAgent:
         planner_brief: dict[str, Any],
         tool_events: list[ToolEvent],
         execution_trace: list[str],
+        spec_lookup_request: bool = False,
     ) -> tuple[dict[str, Any], str]:
         tool_summaries = [
             f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
@@ -954,6 +1035,7 @@ class OfficeAgent:
                 f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
                 "planner_plan:",
                 *[f"- {item}" for item in self._normalize_string_list(planner_brief.get("plan") or [], limit=6)],
+                f"task_mode={'spec_lookup' if spec_lookup_request else 'general'}",
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
                 "execution_trace_tail:",
@@ -976,6 +1058,8 @@ class OfficeAgent:
             self._SystemMessage(
                 content=(
                     "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
+                    "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链，"
+                    "或最终答复没有引用页码/章节/命中片段时，verdict 必须是 needs_attention。"
                     "不要输出思维链。"
                     '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
                     "verdict 只能是 pass 或 needs_attention；confidence 只能是 high, medium, low。"
@@ -1494,6 +1578,15 @@ class OfficeAgent:
                 func=self._read_text_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="search_text_in_file",
+                description=(
+                    "Search within a local text/document file and return matching evidence snippets. "
+                    "Use this first for specs/protocols/command codes; it expands hex variants like 15h/15 h/0x15."
+                ),
+                args_schema=SearchTextInFileArgs,
+                func=self._search_text_in_file_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="copy_file",
                 description="Copy a file (binary-safe) from src_path to dst_path in allowed roots.",
                 args_schema=CopyFileArgs,
@@ -1580,6 +1673,17 @@ class OfficeAgent:
 
     def _read_text_file_tool(self, path: str, start_char: int = 0, max_chars: int = 200000) -> str:
         result = self.tools.read_text_file(path=path, start_char=start_char, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _search_text_in_file_tool(
+        self, path: str, query: str, max_matches: int = 8, context_chars: int = 280
+    ) -> str:
+        result = self.tools.search_text_in_file(
+            path=path,
+            query=query,
+            max_matches=max_matches,
+            context_chars=context_chars,
+        )
         return json.dumps(result, ensure_ascii=False)
 
     def _copy_file_tool(
@@ -1755,7 +1859,8 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "你应直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取，不要先询问用户。"
+                                "若任务是在规范/协议中定位章节或命令码，先调用 search_text_in_file(path=该路径, query=目标关键词)；"
+                                "随后再用 read_text_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
                             ),
                         }
                     )
@@ -1772,7 +1877,8 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "你应直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取后再分析，不要先询问用户。"
+                                "若任务是在规范/协议中定位章节或命令码，先调用 search_text_in_file(path=该路径, query=目标关键词)；"
+                                "随后再用 read_text_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
                             ),
                         }
                     )
@@ -1959,6 +2065,67 @@ class OfficeAgent:
             return f"{int(size)} {units[idx]}"
         return f"{size:.2f} {units[idx]}"
 
+    def _looks_like_spec_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        if not attachment_metas:
+            return False
+
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+
+        if re.search(r"(?i)\b(?:0x[0-9a-f]{1,4}|[0-9a-f]{1,4}h)\b", text):
+            return True
+
+        hints = (
+            "spec",
+            "specification",
+            "protocol",
+            "opcode",
+            "command",
+            "register",
+            "section",
+            "chapter",
+            "status code",
+            "feature id",
+            "feature identifier",
+            "nvme",
+            "规范",
+            "协议",
+            "规格",
+            "规格书",
+            "命令",
+            "寄存器",
+            "章节",
+            "条目",
+            "状态码",
+        )
+        return any(hint in text for hint in hints)
+
+    def _spec_lookup_needs_more_evidence(self, ai_msg: Any, tool_events: list[ToolEvent]) -> bool:
+        content = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
+        if not content:
+            return True
+
+        saw_search = any(tool.name == "search_text_in_file" for tool in tool_events)
+        saw_read = any(tool.name == "read_text_file" for tool in tool_events)
+        if not saw_search:
+            return True
+        if not saw_read:
+            return True
+
+        evidence_markers = (
+            "page",
+            "页",
+            "section",
+            "chapter",
+            "章节",
+            "命中",
+            "片段",
+            "according to",
+            "在当前提取文本中",
+        )
+        return not any(marker in content for marker in evidence_markers)
+
     def _request_likely_requires_tools(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         if attachment_metas:
             return True
@@ -1974,6 +2141,7 @@ class OfficeAgent:
             "路径",
             "目录",
             "read_text_file",
+            "search_text_in_file",
             "write_text_file",
             "append_text_file",
             "replace_in_file",

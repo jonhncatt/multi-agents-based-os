@@ -7,35 +7,21 @@ import zipfile
 from html import unescape
 from pathlib import Path
 
+from app.document_text import extract_pdf_text_from_path, truncate_text
+
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _MSG_MARKERS_ASCII = (b"__substg1.0_", b"IPM.")
 _MSG_MARKERS_UTF16 = tuple(marker.decode("ascii").encode("utf-16-le") for marker in _MSG_MARKERS_ASCII)
 _XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 
 
-def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    keep = max_chars - 64
-    return f"{text[:keep]}\n\n[内容已截断，原始长度 {len(text)} 字符]"
-
-
 def _read_plain_text(path: Path, max_chars: int) -> str:
     text = path.read_text(encoding="utf-8", errors="ignore")
-    return _truncate(text, max_chars)
+    return truncate_text(text, max_chars)
 
 
 def _extract_pdf(path: Path, max_chars: int) -> str:
-    from pypdf import PdfReader  # lazy import
-
-    reader = PdfReader(str(path))
-    chunks: list[str] = []
-    for idx, page in enumerate(reader.pages, start=1):
-        chunks.append(f"\n--- Page {idx} ---\n")
-        chunks.append(page.extract_text() or "")
-        if sum(len(c) for c in chunks) > max_chars:
-            break
-    return _truncate("".join(chunks), max_chars)
+    return extract_pdf_text_from_path(path, max_chars=max_chars)
 
 
 def _extract_docx(path: Path, max_chars: int) -> str:
@@ -43,7 +29,7 @@ def _extract_docx(path: Path, max_chars: int) -> str:
 
     doc = Document(str(path))
     text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-    return _truncate(text, max_chars)
+    return truncate_text(text, max_chars)
 
 
 def _xlsx_cell_to_text(value: object) -> str:
@@ -124,7 +110,7 @@ def _extract_xlsx(path: Path, max_chars: int) -> str:
 
         if truncated:
             lines.append("\n[内容已截断，工作簿内容较大]")
-        return _truncate("\n".join(lines), max_chars)
+        return truncate_text("\n".join(lines), max_chars)
     finally:
         try:
             wb.close()
@@ -325,7 +311,7 @@ def _extract_outlook_msg(path: Path, max_chars: int) -> str:
             sections.append("\n--- 正文 ---\n")
             sections.append("[未提取到可读正文：该邮件可能仅包含附件、图片或受限富文本内容]")
 
-        return _truncate("\n".join(sections).strip(), max_chars)
+        return truncate_text("\n".join(sections).strip(), max_chars)
     finally:
         close = getattr(msg, "close", None)
         if callable(close):
