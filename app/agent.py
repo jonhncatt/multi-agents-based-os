@@ -970,10 +970,12 @@ class OfficeAgent:
             add_trace(note)
         reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
         reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
-        if reviewer_verdict == "needs_attention":
-            add_trace(f"多 Agent: Reviewer 提示需关注，confidence={reviewer_confidence}。")
+        if reviewer_verdict == "block":
+            add_trace(f"多 Agent: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
+        elif reviewer_verdict == "warn":
+            add_trace(f"多 Agent: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
         else:
-            add_trace(f"多 Agent: Reviewer 完成审阅，confidence={reviewer_confidence}。")
+            add_trace(f"多 Agent: Reviewer 通过，confidence={reviewer_confidence}。")
         add_debug(
             stage="llm_to_backend",
             title="Reviewer -> 后端编排器",
@@ -985,6 +987,11 @@ class OfficeAgent:
         reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
         reviewer_bullets = (
             self._normalize_string_list(
+                [f"判定: {reviewer_verdict}"],
+                limit=1,
+                item_limit=80,
+            )
+            + self._normalize_string_list(
                 [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
                 limit=4,
                 item_limit=180,
@@ -1271,17 +1278,21 @@ class OfficeAgent:
             self._SystemMessage(
                 content=(
                     "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
-                    "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链，"
-                    "或最终答复没有引用页码/章节/命中片段时，verdict 必须是 needs_attention。"
+                    "你的 verdict 必须使用三级结论：pass、warn、block。"
+                    "pass = 结论和证据都足够，可以直接放行；"
+                    "warn = 核心方向基本正确，但证据表达、引用粒度或措辞需要补强，不应全盘否决；"
+                    "block = 证据链明显缺失、独立复核冲突明显、或当前结论高风险到不能直接交付。"
+                    "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
+                    "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
                     "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
                     "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase。"
                     "你还要使用自己的通识和领域知识做冲突检测："
                     "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
-                    "即使文案表面自洽，也必须标记为 needs_attention，并在 risks/followups 中明确要求重新取证。"
+                    "即使文案表面自洽，也必须标记为 warn 或 block，并在 risks/followups 中明确要求重新取证。"
                     "但你的知识只能用于报警和指出不一致，不能替代工具证据直接宣称文档事实。"
                     "不要输出思维链。"
                     '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
-                    "verdict 只能是 pass 或 needs_attention；confidence 只能是 high, medium, low。"
+                    "verdict 只能是 pass, warn, block；confidence 只能是 high, medium, low。"
                 )
             ),
             self._HumanMessage(content=reviewer_input),
@@ -1412,9 +1423,15 @@ class OfficeAgent:
                 fallback["effective_model"] = effective_model
                 return fallback, raw_text
 
-            verdict = str(parsed.get("verdict") or "pass").strip().lower()
-            if verdict not in {"pass", "needs_attention"}:
-                verdict = "pass"
+            verdict = self._normalize_reviewer_verdict(
+                parsed.get("verdict"),
+                risks=parsed.get("risks") or [],
+                followups=parsed.get("followups") or [],
+                spec_lookup_request=spec_lookup_request,
+                evidence_required_mode=evidence_required_mode,
+                readonly_checks=reviewer_tool_names,
+                conflict_has_conflict=bool((conflict_brief or {}).get("has_conflict")),
+            )
             confidence = str(parsed.get("confidence") or "medium").strip().lower()
             if confidence not in {"high", "medium", "low"}:
                 confidence = "medium"
@@ -1491,6 +1508,10 @@ class OfficeAgent:
             self._SystemMessage(
                 content=(
                     "你是 Revision Agent。你负责根据 Reviewer 结论对最终答复做最后一次修订。"
+                    "如果 reviewer_verdict=pass，通常保持原文或只做极小润色。"
+                    "如果 reviewer_verdict=warn，优先保留 Worker 已经找到的核心信息，补上页码/章节/命中片段/限定语，"
+                    "不要因为证据表达不完整就整段推翻。"
+                    "如果 reviewer_verdict=block，才应把最终答复改成更保守或更明确要求继续取证的版本。"
                     "如果当前答复已经足够好，可以保持原文不变。"
                     "禁止引入新的未经工具或上下文支持的事实。"
                     "如果 Reviewer 指出与通识或领域知识存在明显冲突，而工具证据又不足，"
@@ -2083,6 +2104,38 @@ class OfficeAgent:
             "fact_check_file",
             "search_codebase",
         ]
+
+    def _normalize_reviewer_verdict(
+        self,
+        raw_verdict: Any,
+        *,
+        risks: Any,
+        followups: Any,
+        spec_lookup_request: bool,
+        evidence_required_mode: bool,
+        readonly_checks: list[str],
+        conflict_has_conflict: bool,
+    ) -> str:
+        verdict = str(raw_verdict or "pass").strip().lower()
+        if verdict == "needs_attention":
+            if conflict_has_conflict or (spec_lookup_request and "search_text_in_file" not in set(readonly_checks)):
+                return "block"
+            return "warn"
+        if verdict in {"pass", "warn", "block"}:
+            return verdict
+
+        has_risks = bool(self._normalize_string_list(risks or [], limit=4, item_limit=180))
+        has_followups = bool(self._normalize_string_list(followups or [], limit=4, item_limit=180))
+        readonly_set = set(readonly_checks)
+        if conflict_has_conflict:
+            return "block"
+        if spec_lookup_request and "search_text_in_file" not in readonly_set:
+            return "block"
+        if evidence_required_mode and not readonly_set:
+            return "block"
+        if has_risks or has_followups:
+            return "warn"
+        return "pass"
 
     def _summarize_reviewer_tool_result(self, *, name: str, result: dict[str, Any]) -> str:
         if not isinstance(result, dict):
