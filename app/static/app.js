@@ -57,6 +57,7 @@ const LLM_FLOW_STAGE_LABELS = {
   frontend_prepare: "前端组包",
   frontend_error: "前端错误",
   backend_ingress: "后端接收输入",
+  backend_router: "规则 Router 判定",
   backend_to_llm: "Coordinator -> 模型角色",
   llm_to_backend: "模型角色 -> Coordinator",
   backend_tool: "Coordinator 执行工具",

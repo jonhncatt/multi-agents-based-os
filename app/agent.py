@@ -682,8 +682,8 @@ class OfficeAgent:
             f"task_type={route.get('task_type')}, complexity={route.get('complexity')}, source={route.get('source')}。"
         )
         add_debug(
-            stage="backend_to_llm" if route.get("source") == "llm_router" else "backend_router",
-            title="Backend -> Router" if route.get("source") == "llm_router" else "Backend 规则 Router",
+            stage="llm_to_backend" if route.get("source") == "llm_router" else "backend_router",
+            title="Router 判定 -> Coordinator" if route.get("source") == "llm_router" else "规则 Router 判定 -> Coordinator",
             detail=(
                 f"route={json.dumps(route, ensure_ascii=False)}\n"
                 f"raw={self._shorten(router_raw, 2400 if not debug_raw else 120000)}"
@@ -716,7 +716,12 @@ class OfficeAgent:
         router_system_hint = self._router_system_hint(route)
         if router_system_hint:
             messages.insert(1, self._SystemMessage(content=router_system_hint))
-            add_trace("多 Agent: Worker 已加载 Router 摘要。")
+            add_trace("多 Agent: Coordinator 已将 Router 摘要注入 Worker 请求。")
+            add_debug(
+                stage="backend_coordinator",
+                title="Coordinator 注入 Router 摘要",
+                detail=router_system_hint,
+            )
 
         spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
         evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
@@ -819,7 +824,12 @@ class OfficeAgent:
             planner_system_hint = self._format_planner_system_hint(planner_brief)
             if planner_system_hint:
                 messages.insert(1, self._SystemMessage(content=planner_system_hint))
-                add_trace("多 Agent: Worker 已加载 Planner 摘要。")
+                add_trace("多 Agent: Coordinator 已将 Planner 摘要注入 Worker 请求。")
+                add_debug(
+                    stage="backend_coordinator",
+                    title="Coordinator 注入 Planner 摘要",
+                    detail=planner_system_hint,
+                )
         else:
             add_trace("Router 已跳过 Planner。")
 
@@ -875,7 +885,12 @@ class OfficeAgent:
         for hint in reversed(specialist_system_hints):
             messages.insert(1, self._SystemMessage(content=hint))
         if specialist_system_hints:
-            add_trace("多 Agent: Worker 已加载专门角色摘要。")
+            add_trace("多 Agent: Coordinator 已将专门角色摘要注入 Worker 请求。")
+            add_debug(
+                stage="backend_coordinator",
+                title="Coordinator 注入专门角色摘要",
+                detail="\n\n".join(specialist_system_hints),
+            )
 
         prefetch_payload = self._auto_prefetch_web(specialist_prefetch_query, bool(route.get("use_web_prefetch")))
         if prefetch_payload:
@@ -927,7 +942,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="Coordinator -> Worker",
+            title="Coordinator -> Worker（最终组包）",
             detail=(
                 f"model={requested_model}, enable_tools={self._coordinator_tools_enabled(execution_state)}, max_output_tokens={settings.max_output_tokens}, "
                 f"tool_mode={execution_state.tool_mode}, "
@@ -1464,20 +1479,12 @@ class OfficeAgent:
         add_panel("worker", "Worker", worker_summary, worker_bullets)
         add_debug(
             stage="multi_agent_worker",
-            title="Worker 执行完成",
+            title="Worker 执行完成（含最终草稿）",
             detail=(
                 f"effective_model={effective_model}\n"
                 f"tool_events={len(tool_events)}\n"
                 f"text_chars={len(text)}\n"
                 f"text_preview={self._shorten(text, 1200 if not debug_raw else 50000)}"
-            ),
-        )
-        add_debug(
-            stage="llm_final",
-            title="Worker 最终草稿",
-            detail=(
-                f"effective_model={effective_model}\n"
-                f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}"
             ),
         )
         conflict_brief = {
@@ -1504,7 +1511,8 @@ class OfficeAgent:
             "readonly_evidence": [],
         }
         if route.get("use_reviewer"):
-            reviewer_rerun_budget = 1 if self._coordinator_tools_enabled(execution_state) else 0
+            max_reviewer_reruns = 3
+            reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
             while True:
                 if route.get("use_conflict_detector"):
                     conflict_request_detail = "\n".join(
