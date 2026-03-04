@@ -578,6 +578,10 @@ class OfficeAgent:
         add_trace(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
         followup_topic_hint = self._build_followup_topic_hint(user_message=user_message, history_turns=history_turns)
+        followup_attachment_requires_tools = any(
+            self._attachment_needs_tooling_for_turn(meta, history_turn_count=len(history_turns))
+            for meta in attachment_metas
+        )
         force_tool_followup = self._should_force_tool_followup_continuation(
             current_message=user_message,
             followup_topic_hint=followup_topic_hint,
@@ -668,6 +672,34 @@ class OfficeAgent:
                 {
                     "source": "backend_override",
                     "reason": "followup_execution_ack_forces_tool_continuation",
+                    "task_type": route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+        if followup_attachment_requires_tools and not route.get("use_worker_tools"):
+            route = self._normalize_route_decision(
+                {
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
+                    "reason": "backend_followup_attachment_requires_tooling",
+                    "summary": "跟进轮附件本轮仅提供路径，Coordinator 已强制启用 Worker 工具链继续读取。",
+                    "source": "backend_override",
+                },
+                fallback=route,
+                settings=settings,
+            )
+            router_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "followup_attachment_requires_tooling",
                     "task_type": route.get("task_type"),
                 },
                 ensure_ascii=False,
@@ -1024,6 +1056,19 @@ class OfficeAgent:
                         f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
                     ),
                 )
+                messages.append(
+                    self._AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": name,
+                                "args": arguments,
+                                "id": call_id,
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                )
             else:
                 add_trace(f"执行工具: {name}")
                 add_debug(
@@ -1100,7 +1145,10 @@ class OfficeAgent:
             )
 
         has_attachments = bool(attachment_metas)
-        attachments_need_tooling = any(self._attachment_needs_tooling(meta) for meta in attachment_metas)
+        attachments_need_tooling = any(
+            self._attachment_needs_tooling_for_turn(meta, history_turn_count=len(history_turns))
+            for meta in attachment_metas
+        )
         has_msg_attachment = any(str(meta.get("suffix", "") or "").lower() == ".msg" for meta in attachment_metas)
         request_requires_tools = self._coordinator_tools_enabled(execution_state) or attachments_need_tooling
         auto_nudge_budget = min(execution_state.max_attempts, 4 if has_attachments else 2)
@@ -1533,6 +1581,9 @@ class OfficeAgent:
                     conflict_brief, conflict_raw = self._run_answer_conflict_detector(
                         requested_model=effective_model or requested_model,
                         user_message=user_message,
+                        effective_user_message=planner_user_message,
+                        history_summary=summary,
+                        attachment_metas=attachment_metas,
                         final_text=text,
                         planner_brief=planner_brief,
                         tool_events=tool_events,
@@ -1564,6 +1615,8 @@ class OfficeAgent:
                         f"requested_model={effective_model or requested_model}",
                         f"tool_events={len(tool_events)}",
                         f"execution_trace_items={len(execution_trace)}",
+                        f"effective_user_request={self._shorten(planner_user_message, 280 if not debug_raw else 5000)}",
+                        f"history_summary_chars={len(summary.strip())}",
                         f"draft_chars={len(text)}",
                         f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
                         f"evidence_required_mode={evidence_required_mode}",
@@ -1577,6 +1630,9 @@ class OfficeAgent:
                 reviewer_brief, reviewer_raw = self._run_reviewer(
                     requested_model=effective_model or requested_model,
                     user_message=user_message,
+                    effective_user_message=planner_user_message,
+                    history_summary=summary,
+                    attachment_metas=attachment_metas,
                     final_text=text,
                     planner_brief=planner_brief,
                     tool_events=tool_events,
@@ -1633,6 +1689,7 @@ class OfficeAgent:
                 add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
 
                 followup_reads = self._coordinator_collect_truncated_read_requests(tool_events, limit=2)
+                reviewer_wants_more = self._reviewer_requests_more_evidence(reviewer_brief)
                 if (
                     reviewer_rerun_budget > 0
                     and followup_reads
@@ -1689,12 +1746,56 @@ class OfficeAgent:
                         text = "模型未返回可见文本。"
                     continue
 
+                if (
+                    reviewer_rerun_budget > 0
+                    and reviewer_wants_more
+                    and self._coordinator_tools_enabled(execution_state)
+                    and (bool(attachment_metas) or bool(tool_events))
+                ):
+                    reviewer_rerun_budget -= 1
+                    add_trace("Reviewer 指出当前证据或上下文不足，Coordinator 已要求 Worker 继续基于现有附件与工具结果完成任务。")
+                    add_debug(
+                        stage="backend_coordinator",
+                        title="Coordinator 根据 Reviewer 继续推动 Worker",
+                        detail=(
+                            f"reviewer_verdict={reviewer_verdict}\n"
+                            f"reviewer_summary={self._shorten(reviewer_summary, 280)}\n"
+                            f"reviewer_risks={json.dumps(self._normalize_string_list(reviewer_brief.get('risks') or [], limit=4, item_limit=180), ensure_ascii=False)}"
+                        ),
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "Reviewer 已指出当前答案的证据或上下文仍不足。"
+                                "请继续基于现有附件、路径和先前工具结果完成任务。"
+                                "如果本轮有附件但尚未读取足够正文，优先调用 read_text_file、search_text_in_file、read_section_by_heading、table_extract、search_codebase 等只读工具继续补足。"
+                                "不要再要求用户确认，不要停在“无法核对/需要文档”这类占位结论。"
+                                "补足后直接给出更新后的完整答案。"
+                            )
+                        )
+                    )
+                    ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
+                        title="Worker -> Coordinator（根据 Reviewer 继续完成）",
+                        model=effective_model,
+                        current_runner=runner,
+                    )
+                    usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                    text = self._content_to_text(getattr(ai_msg, "content", ""))
+                    if not text.strip():
+                        text = "模型未返回可见文本。"
+                    continue
+
                 if route.get("use_revision"):
                     revision_request_detail = "\n".join(
                         [
                             f"requested_model={effective_model or requested_model}",
+                            f"effective_user_request={self._shorten(planner_user_message, 280 if not debug_raw else 5000)}",
                             f"reviewer_verdict={reviewer_verdict}",
                             f"reviewer_confidence={reviewer_confidence}",
+                            f"reviewer_summary={self._shorten(str(reviewer_brief.get('summary') or ''), 220 if not debug_raw else 5000)}",
+                            f"reviewer_risks={json.dumps(self._normalize_string_list(reviewer_brief.get('risks') or [], limit=4, item_limit=180), ensure_ascii=False)}",
+                            f"reviewer_followups={json.dumps(self._normalize_string_list(reviewer_brief.get('followups') or [], limit=3, item_limit=180), ensure_ascii=False)}",
                             f"current_text_chars={len(text)}",
                             f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
                         ]
@@ -1707,6 +1808,9 @@ class OfficeAgent:
                     revision_brief, revision_raw = self._run_revision(
                         requested_model=effective_model or requested_model,
                         user_message=user_message,
+                        effective_user_message=planner_user_message,
+                        history_summary=summary,
+                        attachment_metas=attachment_metas,
                         current_text=text,
                         planner_brief=planner_brief,
                         reviewer_brief=reviewer_brief,
@@ -1723,8 +1827,24 @@ class OfficeAgent:
                     revised_text = str(revision_brief.get("final_answer") or "").strip()
                     revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
                     if revision_changed:
-                        text = revised_text
-                        add_trace("多 Agent: Revision 已应用到最终答复。")
+                        if self._should_preserve_worker_answer_after_revision(
+                            current_text=text,
+                            revised_text=revised_text,
+                            tool_events=tool_events,
+                            attachment_metas=attachment_metas,
+                        ):
+                            add_trace("检测到 Revision 抹掉了已成功写出的交付结果，Coordinator 已保留 Worker 原答复。")
+                            add_debug(
+                                stage="backend_warning",
+                                title="Coordinator 拒绝覆盖 Worker 交付结果",
+                                detail=(
+                                    f"current_text_preview={self._shorten(text, 500 if not debug_raw else 5000)}\n"
+                                    f"revised_text_preview={self._shorten(revised_text, 500 if not debug_raw else 5000)}"
+                                ),
+                            )
+                        else:
+                            text = revised_text
+                            add_trace("多 Agent: Revision 已应用到最终答复。")
                     else:
                         add_trace("多 Agent: Revision 未修改最终答复。")
                     add_debug(
@@ -1906,6 +2026,9 @@ class OfficeAgent:
         *,
         requested_model: str,
         user_message: str,
+        effective_user_message: str,
+        history_summary: str,
+        attachment_metas: list[dict[str, Any]],
         final_text: str,
         planner_brief: dict[str, Any],
         tool_events: list[ToolEvent],
@@ -1913,9 +2036,14 @@ class OfficeAgent:
         evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
         validation_context = self._summarize_validation_context(tool_events)
+        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
+        tool_summaries = self._summarize_tool_events_for_review(tool_events, limit=10)
         detector_input = "\n".join(
             [
-                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"effective_user_request:\n{effective_user_message.strip() or user_message.strip() or '(empty)'}",
+                f"raw_user_message:\n{user_message.strip() or '(empty)'}",
+                f"history_summary:\n{history_summary.strip() or '(none)'}",
+                f"attachments:\n{attachment_summary}",
                 f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
                 f"spec_lookup_request={str(spec_lookup_request).lower()}",
                 f"evidence_required_mode={str(evidence_required_mode).lower()}",
@@ -1925,6 +2053,8 @@ class OfficeAgent:
                 *[f"- {item}" for item in validation_context["web_tool_notes"]],
                 "web_tool_warnings:",
                 *[f"- {item}" for item in validation_context["web_tool_warnings"]],
+                "tool_events:",
+                *(tool_summaries or ["(none)"]),
                 f"answer:\n{final_text.strip() or '(empty)'}",
             ]
         )
@@ -1945,6 +2075,9 @@ class OfficeAgent:
                     "基于通识、成熟工程知识和任务上下文，检查当前答案是否存在明显可疑点、过度确定、或与常见知识冲突。"
                     "不要输出思维链。"
                     "你的知识只能用于报警和建议复核，不能替代文件证据。"
+                    "如果 attachments 或 tool_events 已显示本轮存在附件/本地文件且 Worker 已经读取过，"
+                    "不要仅因为 raw_user_message 是短跟进、或你自己没有独立文件证据，就把答案判成“没有依据”。"
+                    "只有当答案和通识或工程常识存在明确冲突时，才应标记 has_conflict=true。"
                     "必须区分底层模型限制与工具增强后的系统能力。"
                     "如果本轮已经成功使用 search_web、fetch_web 或 download_web_file 获得实时来源，"
                     "不能仅因为“模型原生不支持实时信息”就判定答案冲突；"
@@ -2000,6 +2133,9 @@ class OfficeAgent:
         *,
         requested_model: str,
         user_message: str,
+        effective_user_message: str,
+        history_summary: str,
+        attachment_metas: list[dict[str, Any]],
         final_text: str,
         planner_brief: dict[str, Any],
         tool_events: list[ToolEvent],
@@ -2010,10 +2146,9 @@ class OfficeAgent:
         debug_cb: Callable[[str, str, str], None] | None = None,
         trace_cb: Callable[[str], None] | None = None,
     ) -> tuple[dict[str, Any], str]:
-        tool_summaries = [
-            f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
-            for idx, tool in enumerate(tool_events[:10])
-        ]
+        tool_summaries = self._summarize_tool_events_for_review(tool_events, limit=12)
+        write_actions = self._summarize_write_tool_events(tool_events, limit=6)
+        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
         validation_context = self._summarize_validation_context(tool_events)
         local_access_succeeded = self._has_successful_local_file_access(tool_events)
         conflict_lines = [
@@ -2024,7 +2159,10 @@ class OfficeAgent:
         ]
         reviewer_input = "\n".join(
             [
-                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"effective_user_request:\n{effective_user_message.strip() or user_message.strip() or '(empty)'}",
+                f"raw_user_message:\n{user_message.strip() or '(empty)'}",
+                f"history_summary:\n{history_summary.strip() or '(none)'}",
+                f"attachments:\n{attachment_summary}",
                 f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
                 "planner_plan:",
                 *[f"- {item}" for item in self._normalize_string_list(planner_brief.get("plan") or [], limit=6)],
@@ -2037,6 +2175,8 @@ class OfficeAgent:
                 "web_tool_warnings:",
                 *[f"- {item}" for item in validation_context["web_tool_warnings"]],
                 *conflict_lines,
+                "write_actions:",
+                *(write_actions or ["(none)"]),
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
                 "execution_trace_tail:",
@@ -2058,10 +2198,16 @@ class OfficeAgent:
         readonly_tools = self._reviewer_readonly_tool_names()
         reviewer_system_prompt = (
             "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
+            "如果 raw_user_message 看起来只是短跟进/纠偏，而 effective_user_request 延续了上一轮完整目标，"
+            "你必须以 effective_user_request 作为主要评审目标。"
+            "如果 attachments 段列出了本轮附件，你必须把这些附件视为已存在且对当前任务有效，"
+            "不能因为 raw_user_message 没有重复列出附件名，就误判为附件不存在、未提供或不在本轮范围内。"
             "你的 verdict 必须使用三级结论：pass、warn、block。"
             "pass = 结论和证据都足够，可以直接放行；"
             "warn = 核心方向基本正确，但证据表达、引用粒度或措辞需要补强，不应全盘否决；"
             "block = 证据链明显缺失、独立复核冲突明显、或当前结论高风险到不能直接交付。"
+            "如果 tool_events 或 write_actions 已显示 Worker 成功新建/改写了交付文件，"
+            "不得仅因为 raw_user_message 里出现“查看/查找旧文件”之类的短跟进措辞，就误判为偏离任务。"
             "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
             "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
             "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
@@ -2106,7 +2252,7 @@ class OfficeAgent:
             )
             notes.extend(invoke_notes)
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-            nudge_budget = 1 if evidence_required_mode else 0
+            nudge_budget = 1 if (evidence_required_mode or bool(attachment_metas) or local_access_succeeded) else 0
             for _ in range(12):
                 tool_calls = getattr(ai_msg, "tool_calls", None) or []
                 if not tool_calls:
@@ -2229,6 +2375,7 @@ class OfficeAgent:
                 conflict_has_conflict=bool((conflict_brief or {}).get("has_conflict")),
                 conflict_realtime_only=self._conflict_is_realtime_capability_warning(conflict_brief),
                 web_tools_success=bool(validation_context["web_tools_success"]),
+                attachment_context_available=bool(attachment_metas) or local_access_succeeded,
             )
             confidence = str(parsed.get("confidence") or "medium").strip().lower()
             if confidence not in {"high", "medium", "low"}:
@@ -2256,6 +2403,9 @@ class OfficeAgent:
         *,
         requested_model: str,
         user_message: str,
+        effective_user_message: str,
+        history_summary: str,
+        attachment_metas: list[dict[str, Any]],
         current_text: str,
         planner_brief: dict[str, Any],
         reviewer_brief: dict[str, Any],
@@ -2264,13 +2414,15 @@ class OfficeAgent:
         evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
         local_access_succeeded = self._has_successful_local_file_access(tool_events)
-        tool_summaries = [
-            f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
-            for idx, tool in enumerate(tool_events[:8])
-        ]
+        tool_summaries = self._summarize_tool_events_for_review(tool_events, limit=10)
+        write_actions = self._summarize_write_tool_events(tool_events, limit=6)
+        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
         revision_input = "\n".join(
             [
-                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"effective_user_request:\n{effective_user_message.strip() or user_message.strip() or '(empty)'}",
+                f"raw_user_message:\n{user_message.strip() or '(empty)'}",
+                f"history_summary:\n{history_summary.strip() or '(none)'}",
+                f"attachments:\n{attachment_summary}",
                 f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
                 f"reviewer_verdict={str(reviewer_brief.get('verdict') or 'pass').strip()}",
                 f"reviewer_confidence={str(reviewer_brief.get('confidence') or 'medium').strip()}",
@@ -2289,6 +2441,8 @@ class OfficeAgent:
                 f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
                 "conflict_concerns:",
                 *[f"- {item}" for item in self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4)],
+                "write_actions:",
+                *(write_actions or ["(none)"]),
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
                 f"current_answer:\n{current_text.strip() or '(empty)'}",
@@ -2305,11 +2459,17 @@ class OfficeAgent:
         }
         revision_system_prompt = (
             "你是 Revision Agent。你负责根据 Reviewer 结论对最终答复做最后一次修订。"
+            "如果 raw_user_message 看起来只是短跟进/纠偏，而 effective_user_request 延续了上一轮完整目标，"
+            "你必须以 effective_user_request 作为主要修订目标。"
+            "如果 attachments 段列出了本轮附件，你必须把这些附件视为已存在且对当前任务有效，"
+            "不能仅因为 raw_user_message 没有重复列出附件名，就把答案改写成“附件不存在/未提供附件”的版本。"
             "如果 reviewer_verdict=pass，通常保持原文或只做极小润色。"
             "如果 reviewer_verdict=warn，优先保留 Worker 已经找到的核心信息，补上页码/章节/命中片段/限定语，"
             "不要因为证据表达不完整就整段推翻。"
             "如果 reviewer_verdict=block，才应把最终答复改成更保守或更明确要求继续取证的版本。"
             "如果当前答复已经足够好，可以保持原文不变。"
+            "如果 write_actions 已显示 Worker 成功新建或改写了交付文件，不得假装该交付物不存在，"
+            "也不要仅因短跟进消息措辞而撤销一个与 effective_user_request 一致的交付结果。"
             "禁止引入新的未经工具或上下文支持的事实。"
             "最终输出绝不能暴露内部控制变量或流程字段，"
             "例如 reviewer_verdict、reviewer_confidence、evidence_required_mode、task_mode。"
@@ -2877,6 +3037,94 @@ class OfficeAgent:
         has_code_target = any(hint in text for hint in code_target_hints)
         has_lookup_intent = any(hint in text for hint in lookup_hints)
         return has_code_target and has_lookup_intent and (has_local_scope or self._should_auto_search_default_roots(user_message, attachment_metas))
+
+    def _looks_like_code_generation_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        text = str(user_message or "").strip().lower()
+        if not text:
+            return False
+
+        generation_hints = (
+            "生成",
+            "创建",
+            "新建",
+            "写",
+            "编写",
+            "实现",
+            "开发",
+            "补全",
+            "重构",
+            "改写",
+            "修改",
+            "修复",
+            "generate",
+            "create",
+            "write",
+            "implement",
+            "build",
+            "scaffold",
+            "refactor",
+            "rewrite",
+            "modify",
+            "fix",
+        )
+        code_target_hints = (
+            "代码",
+            "函数",
+            "类",
+            "组件",
+            "页面",
+            "接口",
+            "脚本",
+            "测试",
+            "单元测试",
+            "模块",
+            "plugin",
+            "component",
+            "page",
+            "api",
+            "endpoint",
+            "script",
+            "test",
+            "class",
+            "function",
+            "module",
+            ".py",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".java",
+            ".go",
+            ".rs",
+            ".cpp",
+            ".c",
+        )
+        lookup_only_hints = (
+            "找",
+            "查",
+            "搜",
+            "搜索",
+            "查找",
+            "定位",
+            "explain",
+            "解释",
+            "look for",
+            "find",
+            "search",
+            "locate",
+        )
+
+        has_generation_intent = any(hint in text for hint in generation_hints)
+        if not has_generation_intent:
+            return False
+        has_code_target = any(hint in text for hint in code_target_hints)
+        if not has_code_target and not attachment_metas:
+            return False
+        if any(hint in text for hint in lookup_only_hints) and not any(
+            hint in text for hint in ("生成", "创建", "新建", "编写", "实现", "开发", "generate", "create", "implement", "build", "scaffold")
+        ):
+            return False
+        return True
 
     def _should_force_initial_tool_execution(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         if attachment_metas:
@@ -3674,6 +3922,277 @@ class OfficeAgent:
                 return True
         return False
 
+    def _summarize_tool_events_for_review(self, tool_events: list[ToolEvent], limit: int = 12) -> list[str]:
+        if not tool_events:
+            return []
+
+        keep_names = {
+            "write_text_file",
+            "append_text_file",
+            "replace_in_file",
+            "copy_file",
+            "extract_zip",
+            "extract_msg_attachments",
+        }
+        kept_indexes: list[int] = []
+        seen_indexes: set[int] = set()
+
+        for idx, event in enumerate(tool_events):
+            name = str(event.name or "").strip()
+            if name in keep_names:
+                kept_indexes.append(idx)
+                seen_indexes.add(idx)
+
+        tail_keep = max(0, limit - len(kept_indexes))
+        for idx in range(max(0, len(tool_events) - tail_keep), len(tool_events)):
+            if idx in seen_indexes:
+                continue
+            kept_indexes.append(idx)
+            seen_indexes.add(idx)
+
+        if not kept_indexes:
+            kept_indexes = list(range(max(0, len(tool_events) - limit), len(tool_events)))
+        kept_indexes = sorted(kept_indexes)[-max(1, limit) :]
+        return [
+            self._format_tool_event_for_review(idx=idx, event=tool_events[idx])
+            for idx in kept_indexes
+        ]
+
+    def _format_tool_event_for_review(self, *, idx: int, event: ToolEvent) -> str:
+        name = str(event.name or "unknown").strip() or "unknown"
+        args = json.dumps(event.input or {}, ensure_ascii=False)
+        parsed = self._parse_tool_event_preview(event) or {}
+        status = self._tool_event_ok(event)
+        details: list[str] = []
+        if status is True:
+            details.append("ok")
+        elif status is False:
+            details.append("failed")
+        path = str(parsed.get("path") or "").strip()
+        if path:
+            details.append(f"path={path}")
+        action = str(parsed.get("action") or "").strip()
+        if action:
+            details.append(f"action={action}")
+        query = str((event.input or {}).get("query") or parsed.get("query") or "").strip()
+        if query:
+            details.append(f"query={self._shorten(query, 80)}")
+        match_count = parsed.get("match_count")
+        if isinstance(match_count, int):
+            details.append(f"match_count={match_count}")
+        replacements = parsed.get("replacements")
+        if isinstance(replacements, int):
+            details.append(f"replacements={replacements}")
+        error = str(parsed.get("error") or "").strip()
+        if error:
+            details.append(f"error={self._shorten(error, 120)}")
+        if not details:
+            preview = self._shorten(str(event.output_preview or "").strip(), 120)
+            if preview:
+                details.append(preview)
+        detail_text = "; ".join(details)
+        return f"{idx + 1}. {name}({args}){f' -> {detail_text}' if detail_text else ''}"
+
+    def _summarize_write_tool_events(self, tool_events: list[ToolEvent], limit: int = 6) -> list[str]:
+        lines: list[str] = []
+        for event in tool_events:
+            name = str(event.name or "").strip()
+            if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+                continue
+            parsed = self._parse_tool_event_preview(event) or {}
+            ok = self._tool_event_ok(event)
+            path = str(parsed.get("path") or "").strip() or str((event.input or {}).get("path") or "").strip()
+            action = str(parsed.get("action") or "").strip()
+            if name == "copy_file" and not path:
+                path = str(parsed.get("dst_path") or (event.input or {}).get("dst_path") or "").strip()
+            parts = [name]
+            if ok is True:
+                parts.append("ok")
+            elif ok is False:
+                parts.append("failed")
+            if action:
+                parts.append(f"action={action}")
+            if path:
+                parts.append(f"path={path}")
+            replacements = parsed.get("replacements")
+            if isinstance(replacements, int):
+                parts.append(f"replacements={replacements}")
+            error = str(parsed.get("error") or "").strip()
+            if error:
+                parts.append(f"error={self._shorten(error, 120)}")
+            lines.append(" | ".join(parts))
+        return lines[-max(1, limit) :]
+
+    def _successful_write_targets(self, tool_events: list[ToolEvent]) -> list[str]:
+        targets: list[str] = []
+        for event in tool_events:
+            name = str(event.name or "").strip()
+            if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+                continue
+            if self._tool_event_ok(event) is not True:
+                continue
+            parsed = self._parse_tool_event_preview(event) or {}
+            path = str(parsed.get("path") or "").strip()
+            if not path:
+                path = str((event.input or {}).get("path") or "").strip()
+            if name == "copy_file" and not path:
+                path = str(parsed.get("dst_path") or (event.input or {}).get("dst_path") or "").strip()
+            if path:
+                targets.append(path)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in targets:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
+
+    def _text_acknowledges_written_targets(self, text: str, targets: list[str]) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        tokens: list[str] = []
+        for path in targets:
+            normalized = str(path or "").strip()
+            if not normalized:
+                continue
+            tokens.append(normalized.lower())
+            basename = Path(normalized).name.strip().lower()
+            if basename:
+                tokens.append(basename)
+        if any(token and token in lowered for token in tokens):
+            return True
+        ack_markers = (
+            "已创建",
+            "已生成",
+            "已写入",
+            "已保存",
+            "创建了",
+            "生成了",
+            "写入了",
+            "保存到",
+            "created",
+            "generated",
+            "written",
+            "saved",
+        )
+        artifact_markers = ("文件", "文档", "markdown", ".md", ".txt", ".docx", "file", "document")
+        return any(marker in lowered for marker in ack_markers) and any(marker in lowered for marker in artifact_markers)
+
+    def _should_preserve_worker_answer_after_revision(
+        self,
+        *,
+        current_text: str,
+        revised_text: str,
+        tool_events: list[ToolEvent],
+        attachment_metas: list[dict[str, Any]],
+    ) -> bool:
+        targets = self._successful_write_targets(tool_events)
+        revised_ack = self._text_acknowledges_written_targets(revised_text, targets) if targets else False
+        if targets and revised_ack:
+            return False
+        current_ack = self._text_acknowledges_written_targets(current_text, targets) if targets else False
+        revised_lower = str(revised_text or "").strip().lower()
+        conservative_markers = (
+            "证据不足",
+            "需要继续核对",
+            "需要继续取证",
+            "需要进一步核对",
+            "需要更多上下文",
+            "无法确认",
+            "无法确定",
+            "请提供",
+            "请重新提供",
+            "建议继续核对",
+            "保守",
+            "need more evidence",
+            "need more context",
+            "cannot confirm",
+            "unable to confirm",
+        )
+        attachment_denial = self._looks_like_attachment_absence_claim(
+            revised_text,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+        )
+        looks_like_fallback = (
+            self._looks_like_local_path_denial(revised_text)
+            or self._looks_like_permission_gate_text(
+                revised_text,
+                has_attachments=False,
+                request_requires_tools=True,
+            )
+            or attachment_denial
+            or any(marker in revised_lower for marker in conservative_markers)
+        )
+        if not looks_like_fallback:
+            return False
+        if current_ack:
+            return True
+        if attachment_denial:
+            return True
+        if not targets:
+            return False
+        return len(revised_text.strip()) < max(80, len(current_text.strip()) // 2)
+
+    def _looks_like_attachment_absence_claim(
+        self,
+        text: str,
+        *,
+        attachment_metas: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+    ) -> bool:
+        if not attachment_metas:
+            return False
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        absence_patterns = (
+            "附件不存在",
+            "附件未找到",
+            "找不到附件",
+            "没有附件",
+            "未提供附件",
+            "未上传附件",
+            "附件不在当前上下文",
+            "附件不在本轮",
+            "no attachment",
+            "attachments do not exist",
+            "attachment not found",
+            "attachments not found",
+            "no attachments were provided",
+        )
+        if not any(pattern in lowered for pattern in absence_patterns):
+            return False
+
+        attachment_paths = {
+            str(meta.get("path") or "").strip()
+            for meta in attachment_metas
+            if str(meta.get("path") or "").strip()
+        }
+        attachment_names = {
+            str(meta.get("original_name") or "").strip().lower()
+            for meta in attachment_metas
+            if str(meta.get("original_name") or "").strip()
+        }
+        for event in tool_events:
+            if self._tool_event_ok(event) is not True:
+                continue
+            parsed = self._parse_tool_event_preview(event) or {}
+            for candidate in (
+                str((event.input or {}).get("path") or "").strip(),
+                str(parsed.get("path") or "").strip(),
+            ):
+                if not candidate:
+                    continue
+                if candidate in attachment_paths:
+                    return True
+                if Path(candidate).name.strip().lower() in attachment_names:
+                    return True
+        return True
+
     def _looks_like_local_path_denial(self, text: str) -> bool:
         raw = str(text or "").strip().lower()
         if not raw:
@@ -4263,6 +4782,8 @@ class OfficeAgent:
             return True
         if any(marker in lowered for marker in _INLINE_DOC_CODE_FENCE_HINTS):
             return True
+        if self._looks_like_inline_code_payload(text):
+            return True
 
         xml_tag_matches = re.findall(r"</?[a-zA-Z_][\w:.-]*(?:\s[^<>]{0,200})?>", text)
         if len(xml_tag_matches) >= 6 and ("\n" in text or len(text) >= 240):
@@ -4277,6 +4798,37 @@ class OfficeAgent:
             return True
 
         return False
+
+    def _looks_like_inline_code_payload(self, text: str) -> bool:
+        raw = str(text or "").strip()
+        if len(raw) < 120:
+            return False
+        fenced_blocks = re.findall(r"```[A-Za-z0-9_+.-]*\n([\s\S]{80,}?)```", raw)
+        code_markers = (
+            "def ",
+            "class ",
+            "return ",
+            "import ",
+            "from ",
+            "const ",
+            "let ",
+            "function ",
+            "public ",
+            "private ",
+            "if (",
+            "=>",
+            "</",
+            "{",
+            "};",
+        )
+        if any(any(marker in block for marker in code_markers) for block in fenced_blocks[:3]):
+            return True
+        lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+        if len(lines) < 6:
+            return False
+        marker_hits = sum(1 for line in lines[:40] if any(marker in line for marker in code_markers))
+        punctuation_hits = sum(1 for line in lines[:40] if line.count("{") + line.count("}") + line.count(";") >= 1)
+        return marker_hits >= 4 or (marker_hits >= 2 and punctuation_hits >= 4)
 
     def _looks_like_initial_content_triage_request(self, user_message: str) -> bool:
         text = str(user_message or "").strip().lower()
@@ -4420,6 +4972,26 @@ class OfficeAgent:
             "summary": "默认走完整流水线。",
             "router_model": "",
         }
+
+        if self._looks_like_code_generation_request(user_message, attachment_metas):
+            return self._normalize_route_decision(
+                {
+                    "task_type": "code_generation",
+                    "complexity": "high" if has_attachments else "medium",
+                    "use_planner": True,
+                    "use_worker_tools": bool(settings.enable_tools),
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"] if has_attachments else [],
+                    "reason": "rules_code_generation_request",
+                    "summary": "检测到代码生成/改写请求，直接交给 Worker 实现，不走事实审阅链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
 
         if spec_lookup_request or evidence_required:
             return self._normalize_route_decision(
@@ -4755,6 +5327,12 @@ class OfficeAgent:
                 "本轮属于本地代码定位/函数解释任务。"
                 "直接调用 search_codebase、list_directory、read_text_file 等工具搜索并读取上下文。"
                 "不要向用户追问是否确认、是否继续，也不要要求绝对路径。"
+            )
+        if task_type == "code_generation":
+            return (
+                "本轮属于代码生成/改写任务。"
+                "优先根据用户目标、现有代码与附件约束直接实现。"
+                "不要把答案改写成事实审计或证据仲裁格式。"
             )
         if task_type == "evidence_lookup":
             return "本轮属于查证/定位任务。优先完整取证，再给可复核答案。"
@@ -5187,6 +5765,7 @@ class OfficeAgent:
         conflict_has_conflict: bool,
         conflict_realtime_only: bool,
         web_tools_success: bool,
+        attachment_context_available: bool = False,
     ) -> str:
         verdict = str(raw_verdict or "pass").strip().lower()
         if verdict == "needs_attention":
@@ -5194,9 +5773,13 @@ class OfficeAgent:
                 spec_lookup_request and "search_text_in_file" not in set(readonly_checks)
             ):
                 return "block"
+            if attachment_context_available and not readonly_checks:
+                return "warn"
             return "warn"
         if verdict in {"pass", "warn", "block"}:
             if verdict == "block" and conflict_realtime_only and web_tools_success:
+                return "warn"
+            if verdict == "block" and attachment_context_available and not readonly_checks and not conflict_has_conflict:
                 return "warn"
             return verdict
 
@@ -5882,6 +6465,26 @@ class OfficeAgent:
         if kind == "document" and size > _ATTACHMENT_INLINE_MAX_BYTES:
             return True
         return False
+
+    def _attachment_needs_tooling_for_turn(self, meta: dict[str, Any], history_turn_count: int = 0) -> bool:
+        if self._attachment_needs_tooling(meta):
+            return True
+        if history_turn_count <= 0:
+            return False
+        kind = str(meta.get("kind") or "").strip().lower()
+        if kind != "document":
+            return False
+        try:
+            size = int(meta.get("size") or 0)
+        except Exception:
+            size = 0
+        path = str(meta.get("path") or "").strip()
+        if (not size) and path:
+            try:
+                size = Path(path).stat().st_size
+            except Exception:
+                size = 0
+        return size > _FOLLOWUP_INLINE_MAX_BYTES
 
     def _evidence_mode_needs_more_support(
         self,
