@@ -16,6 +16,7 @@ from app.attachments import extract_document_text, image_to_data_url_with_meta, 
 from app.config import AppConfig
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
+from app.role_runtime import RoleContext, RoleResult, RoleSpec
 
 
 _STYLE_HINTS = {
@@ -894,17 +895,32 @@ class OfficeAgent:
             )
             add_trace("已启用默认根目录自动搜索策略。")
 
-        planner_brief = {
-            "objective": self._shorten(planner_user_message.strip(), 220),
-            "constraints": [],
-            "plan": list(execution_plan),
-            "watchouts": [],
-            "success_signals": [],
-            "usage": self._empty_usage(),
-            "effective_model": effective_model,
-            "notes": [],
-        }
-        planner_raw = ""
+        planner_result = self._make_default_role_result(
+            "planner",
+            requested_model=effective_model,
+            user_message=planner_user_message,
+            history_summary=summary,
+            attachment_metas=attachment_metas,
+            extra={
+                "response_style": settings.response_style,
+                "enable_tools": settings.enable_tools,
+                "max_context_turns": settings.max_context_turns,
+            },
+            description="提炼目标、约束和执行计划。",
+            output_keys=["objective", "constraints", "plan", "watchouts", "success_signals"],
+            payload={
+                "objective": self._shorten(planner_user_message.strip(), 220),
+                "constraints": [],
+                "plan": list(execution_plan),
+                "watchouts": [],
+                "success_signals": [],
+                "usage": self._empty_usage(),
+                "effective_model": effective_model,
+                "notes": [],
+            },
+        )
+        planner_brief = planner_result.payload
+        planner_raw = planner_result.raw_text
         if route.get("use_planner"):
             set_role_activity("coordinator", "planner", current="planner", phase="规划", detail="整理目标与执行计划")
             planner_request_detail = "\n".join(
@@ -921,18 +937,14 @@ class OfficeAgent:
                 title="Coordinator -> Planner",
                 detail=planner_request_detail,
             )
-            planner_brief, planner_raw = self._run_planner(
-                requested_model=requested_model,
-                user_message=planner_user_message,
-                summary=summary,
-                attachment_metas=attachment_metas,
-                settings=settings,
-            )
-            planner_effective_model = str(planner_brief.get("effective_model") or "").strip()
+            planner_result = self._run_planner_role(context=planner_result.context, settings=settings)
+            planner_brief = planner_result.payload
+            planner_raw = planner_result.raw_text
+            planner_effective_model = str(planner_result.effective_model or planner_brief.get("effective_model") or "").strip()
             if planner_effective_model:
                 effective_model = planner_effective_model
-            usage_total = self._merge_usage(usage_total, planner_brief.get("usage") or self._empty_usage())
-            for note in self._normalize_string_list(planner_brief.get("notes") or [], limit=4, item_limit=200):
+            usage_total = self._merge_usage(usage_total, planner_result.usage or self._empty_usage())
+            for note in planner_result.notes:
                 add_trace(note)
             add_trace("多 Role: Planner 已生成目标摘要与执行计划。")
             add_debug(
@@ -946,13 +958,13 @@ class OfficeAgent:
             planner_plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=8, item_limit=160)
             if planner_plan:
                 execution_plan[:] = planner_plan
-            planner_summary = str(planner_brief.get("objective") or "").strip() or "已生成目标摘要。"
+            planner_summary = planner_result.summary or "已生成目标摘要。"
             planner_bullets = (
                 self._normalize_string_list(planner_brief.get("constraints") or [], limit=3, item_limit=180)
                 + self._normalize_string_list(planner_brief.get("plan") or [], limit=4, item_limit=180)
             )
             add_panel("planner", "Planner", planner_summary, planner_bullets)
-            planner_system_hint = self._format_planner_system_hint(planner_brief)
+            planner_system_hint = self._format_planner_system_hint(planner_result)
             if planner_system_hint:
                 messages.insert(1, self._SystemMessage(content=planner_system_hint))
                 add_trace("多 Role: Coordinator 已将 Planner 摘要注入 Worker 请求。")
@@ -985,18 +997,21 @@ class OfficeAgent:
                     f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}"
                 ),
             )
-            specialist_brief, specialist_raw = self._run_specialist_role(
-                specialist=specialist,
+            specialist_context = self._make_role_context(
+                specialist,
                 requested_model=requested_model,
                 user_message=user_message,
-                summary=summary,
-                user_content=user_content,
+                history_summary=summary,
                 attachment_metas=attachment_metas,
                 route=route,
+                user_content=user_content,
             )
-            specialist_model = str(specialist_brief.get("effective_model") or "").strip()
-            usage_total = self._merge_usage(usage_total, specialist_brief.get("usage") or self._empty_usage())
-            for note in self._normalize_string_list(specialist_brief.get("notes") or [], limit=3, item_limit=200):
+            specialist_result = self._run_specialist_with_context(context=specialist_context)
+            specialist_brief = specialist_result.payload
+            specialist_raw = specialist_result.raw_text
+            specialist_model = str(specialist_result.effective_model or specialist_brief.get("effective_model") or "").strip()
+            usage_total = self._merge_usage(usage_total, specialist_result.usage or self._empty_usage())
+            for note in specialist_result.notes:
                 add_trace(note)
                 add_trace(f"多 Role: {specialist_label} 已生成专门简报。")
             add_debug(
@@ -1013,7 +1028,7 @@ class OfficeAgent:
                 str(specialist_brief.get("summary") or "").strip() or f"{specialist_label} 已生成简报。",
                 self._normalize_string_list(specialist_brief.get("bullets") or [], limit=4, item_limit=180),
             )
-            specialist_hint = self._format_specialist_system_hint(specialist, specialist_brief)
+            specialist_hint = self._format_specialist_system_hint(specialist, specialist_result)
             if specialist_hint:
                 specialist_system_hints.append(specialist_hint)
             if specialist == "researcher":
@@ -1677,29 +1692,68 @@ class OfficeAgent:
                 f"text_preview={self._shorten(text, 1200 if not debug_raw else 50000)}"
             ),
         )
-        conflict_brief = {
-            "has_conflict": False,
-            "confidence": "medium",
-            "summary": "Router 已跳过冲突检查。",
-            "concerns": [],
-            "suggested_checks": [],
-            "usage": self._empty_usage(),
-            "effective_model": effective_model,
-            "notes": [],
-        }
-        reviewer_brief = {
-            "verdict": "pass",
-            "confidence": "medium",
-            "summary": "Router 已跳过最终审阅。",
-            "strengths": [],
-            "risks": [],
-            "followups": [],
-            "usage": self._empty_usage(),
-            "effective_model": effective_model,
-            "notes": [],
-            "readonly_checks": [],
-            "readonly_evidence": [],
-        }
+        conflict_result = self._make_default_role_result(
+            "conflict_detector",
+            requested_model=effective_model,
+            user_message=user_message,
+            effective_user_message=planner_user_message,
+            history_summary=summary,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_result,
+            response_text=text,
+            extra={
+                "spec_lookup_request": spec_lookup_request,
+                "evidence_required_mode": evidence_required_mode,
+            },
+            description="检查答案是否与通识或成熟工程知识明显冲突。",
+            output_keys=["has_conflict", "confidence", "summary", "concerns", "suggested_checks"],
+            payload={
+                "has_conflict": False,
+                "confidence": "medium",
+                "summary": "Router 已跳过冲突检查。",
+                "concerns": [],
+                "suggested_checks": [],
+                "usage": self._empty_usage(),
+                "effective_model": effective_model,
+                "notes": [],
+            },
+        )
+        conflict_brief = conflict_result.payload
+        reviewer_result = self._make_default_role_result(
+            "reviewer",
+            requested_model=effective_model,
+            user_message=user_message,
+            effective_user_message=planner_user_message,
+            history_summary=summary,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_result,
+            conflict_brief=conflict_result,
+            execution_trace=execution_trace,
+            response_text=text,
+            extra={
+                "spec_lookup_request": spec_lookup_request,
+                "evidence_required_mode": evidence_required_mode,
+            },
+            description="对最终答复做覆盖度、证据链和风险审阅。",
+            tool_names=self._reviewer_readonly_tool_names(),
+            output_keys=["verdict", "confidence", "summary", "strengths", "risks", "followups"],
+            payload={
+                "verdict": "pass",
+                "confidence": "medium",
+                "summary": "Router 已跳过最终审阅。",
+                "strengths": [],
+                "risks": [],
+                "followups": [],
+                "usage": self._empty_usage(),
+                "effective_model": effective_model,
+                "notes": [],
+                "readonly_checks": [],
+                "readonly_evidence": [],
+            },
+        )
+        reviewer_brief = reviewer_result.payload
         if route.get("use_reviewer"):
             max_reviewer_reruns = 3
             reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
@@ -1727,23 +1781,29 @@ class OfficeAgent:
                         title="Coordinator -> Conflict Detector",
                         detail=conflict_request_detail,
                     )
-                    conflict_brief, conflict_raw = self._run_answer_conflict_detector(
+                    conflict_context = self._make_role_context(
+                        "conflict_detector",
                         requested_model=effective_model or requested_model,
                         user_message=user_message,
                         effective_user_message=planner_user_message,
                         history_summary=summary,
                         attachment_metas=attachment_metas,
-                        final_text=text,
-                        planner_brief=planner_brief,
                         tool_events=tool_events,
-                        spec_lookup_request=spec_lookup_request,
-                        evidence_required_mode=evidence_required_mode,
+                        planner_brief=planner_result,
+                        response_text=text,
+                        extra={
+                            "spec_lookup_request": spec_lookup_request,
+                            "evidence_required_mode": evidence_required_mode,
+                        },
                     )
-                    conflict_effective_model = str(conflict_brief.get("effective_model") or "").strip()
+                    conflict_result = self._run_answer_conflict_detector_role(context=conflict_context)
+                    conflict_brief = conflict_result.payload
+                    conflict_raw = conflict_result.raw_text
+                    conflict_effective_model = str(conflict_result.effective_model or conflict_brief.get("effective_model") or "").strip()
                     if conflict_effective_model:
                         effective_model = conflict_effective_model
-                    usage_total = self._merge_usage(usage_total, conflict_brief.get("usage") or self._empty_usage())
-                    for note in self._normalize_string_list(conflict_brief.get("notes") or [], limit=3, item_limit=200):
+                    usage_total = self._merge_usage(usage_total, conflict_result.usage or self._empty_usage())
+                    for note in conflict_result.notes:
                         add_trace(note)
                     add_debug(
                         stage="llm_to_backend",
@@ -1753,7 +1813,7 @@ class OfficeAgent:
                             f"{self._shorten(conflict_raw, 4000 if debug_raw else 1200)}"
                         ),
                     )
-                    conflict_summary = str(conflict_brief.get("summary") or "").strip() or "已完成通识冲突检查。"
+                    conflict_summary = conflict_result.summary or "已完成通识冲突检查。"
                     conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
                     add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
                 else:
@@ -1783,27 +1843,35 @@ class OfficeAgent:
                     title="Coordinator -> Reviewer",
                     detail=reviewer_request_detail,
                 )
-                reviewer_brief, reviewer_raw = self._run_reviewer(
+                reviewer_context = self._make_role_context(
+                    "reviewer",
                     requested_model=effective_model or requested_model,
                     user_message=user_message,
                     effective_user_message=planner_user_message,
                     history_summary=summary,
                     attachment_metas=attachment_metas,
-                    final_text=text,
-                    planner_brief=planner_brief,
                     tool_events=tool_events,
+                    planner_brief=planner_result,
+                    conflict_brief=conflict_result,
                     execution_trace=execution_trace,
-                    spec_lookup_request=spec_lookup_request,
-                    evidence_required_mode=evidence_required_mode,
-                    conflict_brief=conflict_brief,
+                    response_text=text,
+                    extra={
+                        "spec_lookup_request": spec_lookup_request,
+                        "evidence_required_mode": evidence_required_mode,
+                    },
+                )
+                reviewer_result = self._run_reviewer_role(
+                    context=reviewer_context,
                     debug_cb=add_debug,
                     trace_cb=add_trace,
                 )
-                reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
+                reviewer_brief = reviewer_result.payload
+                reviewer_raw = reviewer_result.raw_text
+                reviewer_effective_model = str(reviewer_result.effective_model or reviewer_brief.get("effective_model") or "").strip()
                 if reviewer_effective_model:
                     effective_model = reviewer_effective_model
-                usage_total = self._merge_usage(usage_total, reviewer_brief.get("usage") or self._empty_usage())
-                for note in self._normalize_string_list(reviewer_brief.get("notes") or [], limit=4, item_limit=200):
+                usage_total = self._merge_usage(usage_total, reviewer_result.usage or self._empty_usage())
+                for note in reviewer_result.notes:
                     add_trace(note)
                 reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
                 reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
@@ -1821,7 +1889,7 @@ class OfficeAgent:
                         f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
                     ),
                 )
-                reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
+                reviewer_summary = reviewer_result.summary or "已完成最终答复审阅。"
                 reviewer_bullets = (
                     self._normalize_string_list(
                         [f"判定: {reviewer_verdict}"],
@@ -1845,13 +1913,13 @@ class OfficeAgent:
                 add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
 
                 followup_reads = self._coordinator_collect_truncated_read_requests(tool_events, limit=2)
-                reviewer_wants_more = self._reviewer_requests_more_evidence(reviewer_brief)
+                reviewer_wants_more = self._reviewer_requests_more_evidence(reviewer_result)
                 if (
                     reviewer_rerun_budget > 0
                     and followup_reads
                     and self._coordinator_should_rerun_worker_after_reviewer(
                         route=route,
-                        reviewer_brief=reviewer_brief,
+                        reviewer_brief=reviewer_result,
                         tool_events=tool_events,
                     )
                 ):
@@ -1968,24 +2036,28 @@ class OfficeAgent:
                         title="Coordinator -> Revision",
                         detail=revision_request_detail,
                     )
-                    revision_brief, revision_raw = self._run_revision(
+                    revision_context = self._make_role_context(
+                        "revision",
                         requested_model=effective_model or requested_model,
                         user_message=user_message,
                         effective_user_message=planner_user_message,
                         history_summary=summary,
                         attachment_metas=attachment_metas,
-                        current_text=text,
-                        planner_brief=planner_brief,
-                        reviewer_brief=reviewer_brief,
                         tool_events=tool_events,
-                        conflict_brief=conflict_brief,
-                        evidence_required_mode=evidence_required_mode,
+                        planner_brief=planner_result,
+                        reviewer_brief=reviewer_result,
+                        conflict_brief=conflict_result,
+                        response_text=text,
+                        extra={"evidence_required_mode": evidence_required_mode},
                     )
-                    revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
+                    revision_result = self._run_revision_role(context=revision_context)
+                    revision_brief = revision_result.payload
+                    revision_raw = revision_result.raw_text
+                    revision_effective_model = str(revision_result.effective_model or revision_brief.get("effective_model") or "").strip()
                     if revision_effective_model:
                         effective_model = revision_effective_model
-                    usage_total = self._merge_usage(usage_total, revision_brief.get("usage") or self._empty_usage())
-                    for note in self._normalize_string_list(revision_brief.get("notes") or [], limit=4, item_limit=200):
+                    usage_total = self._merge_usage(usage_total, revision_result.usage or self._empty_usage())
+                    for note in revision_result.notes:
                         add_trace(note)
                     revised_text = str(revision_brief.get("final_answer") or "").strip()
                     revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
@@ -2018,7 +2090,7 @@ class OfficeAgent:
                             f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
                         ),
                     )
-                    revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
+                    revision_summary = revision_result.summary or "已完成最终润色与修订判断。"
                     revision_bullets = self._normalize_string_list(
                         revision_brief.get("key_changes") or [], limit=4, item_limit=180
                     )
@@ -2090,13 +2162,17 @@ class OfficeAgent:
             phase="结构化整理",
             detail=f"整理 {len(finalized_citations)} 条 citations",
         )
-        answer_bundle, structurer_raw = self._run_answer_structurer(
+        structurer_context = self._make_role_context(
+            "structurer",
             requested_model=effective_model or requested_model,
-            final_text=text,
-            citations=finalized_citations,
-            reviewer_brief=reviewer_brief,
-            conflict_brief=conflict_brief,
+            reviewer_brief=reviewer_result,
+            conflict_brief=conflict_result,
+            response_text=text,
+            extra={"citations": finalized_citations},
         )
+        structurer_result = self._run_answer_structurer_role(context=structurer_context)
+        answer_bundle = structurer_result.payload
+        structurer_raw = structurer_result.raw_text
         add_debug(
             stage="llm_to_backend",
             title="Structurer -> Coordinator",
@@ -2130,6 +2206,126 @@ class OfficeAgent:
             effective_model,
         )
 
+    def _make_role_spec(
+        self,
+        role: str,
+        *,
+        description: str = "",
+        tool_names: list[str] | tuple[str, ...] | None = None,
+        output_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> RoleSpec:
+        role_key = str(role or "").strip().lower()
+        kind = _ROLE_KINDS.get(role_key, "agent")
+        return RoleSpec(
+            role=role_key,
+            kind=kind,
+            llm_driven=kind != "processor",
+            description=description,
+            tool_names=tuple(tool_names or ()),
+            output_keys=tuple(output_keys or ()),
+        )
+
+    def _make_role_context(
+        self,
+        role: str,
+        *,
+        requested_model: str = "",
+        user_message: str = "",
+        effective_user_message: str = "",
+        history_summary: str = "",
+        attachment_metas: list[dict[str, Any]] | None = None,
+        tool_events: list[ToolEvent] | None = None,
+        planner_brief: RoleResult | dict[str, Any] | None = None,
+        reviewer_brief: RoleResult | dict[str, Any] | None = None,
+        conflict_brief: RoleResult | dict[str, Any] | None = None,
+        route: dict[str, Any] | None = None,
+        execution_trace: list[str] | None = None,
+        response_text: str = "",
+        user_content: Any = None,
+        extra: dict[str, Any] | None = None,
+    ) -> RoleContext:
+        return RoleContext(
+            role=str(role or "").strip().lower(),
+            requested_model=requested_model,
+            user_message=user_message,
+            effective_user_message=effective_user_message,
+            history_summary=history_summary,
+            attachment_metas=list(attachment_metas or []),
+            tool_events=list(tool_events or []),
+            planner_brief=dict(self._role_payload_dict(planner_brief)),
+            reviewer_brief=dict(self._role_payload_dict(reviewer_brief)),
+            conflict_brief=dict(self._role_payload_dict(conflict_brief)),
+            route=dict(route or {}),
+            execution_trace=list(execution_trace or []),
+            response_text=response_text,
+            user_content=user_content,
+            extra=dict(extra or {}),
+        )
+
+    def _make_role_result(self, spec: RoleSpec, context: RoleContext, payload: dict[str, Any], raw_text: str) -> RoleResult:
+        summary = str(payload.get("summary") or payload.get("objective") or "").strip()
+        return RoleResult(
+            spec=spec,
+            context=context,
+            payload=payload,
+            raw_text=raw_text,
+            summary=summary,
+            usage=payload.get("usage") or self._empty_usage(),
+            effective_model=str(payload.get("effective_model") or context.requested_model).strip(),
+            notes=self._normalize_string_list(payload.get("notes") or [], limit=6, item_limit=220),
+        )
+
+    def _make_default_role_result(
+        self,
+        role: str,
+        *,
+        payload: dict[str, Any],
+        requested_model: str = "",
+        user_message: str = "",
+        effective_user_message: str = "",
+        history_summary: str = "",
+        attachment_metas: list[dict[str, Any]] | None = None,
+        tool_events: list[ToolEvent] | None = None,
+        planner_brief: RoleResult | dict[str, Any] | None = None,
+        reviewer_brief: RoleResult | dict[str, Any] | None = None,
+        conflict_brief: RoleResult | dict[str, Any] | None = None,
+        route: dict[str, Any] | None = None,
+        execution_trace: list[str] | None = None,
+        response_text: str = "",
+        user_content: Any = None,
+        extra: dict[str, Any] | None = None,
+        description: str = "",
+        tool_names: list[str] | tuple[str, ...] | None = None,
+        output_keys: list[str] | tuple[str, ...] | None = None,
+        raw_text: str = "",
+    ) -> RoleResult:
+        context = self._make_role_context(
+            role,
+            requested_model=requested_model,
+            user_message=user_message,
+            effective_user_message=effective_user_message,
+            history_summary=history_summary,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_brief,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief,
+            route=route,
+            execution_trace=execution_trace,
+            response_text=response_text,
+            user_content=user_content,
+            extra=extra,
+        )
+        spec = self._make_role_spec(role, description=description, tool_names=tool_names, output_keys=output_keys)
+        return self._make_role_result(spec, context, payload, raw_text)
+
+    def _role_payload_dict(self, value: RoleResult | dict[str, Any] | None) -> dict[str, Any]:
+        if isinstance(value, RoleResult):
+            return value.payload
+        if isinstance(value, dict):
+            return value
+        return {}
+
     def _run_planner(
         self,
         *,
@@ -2139,25 +2335,46 @@ class OfficeAgent:
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
     ) -> tuple[dict[str, Any], str]:
+        context = self._make_role_context(
+            "planner",
+            requested_model=requested_model,
+            user_message=user_message,
+            history_summary=summary,
+            attachment_metas=attachment_metas,
+            extra={
+                "response_style": settings.response_style,
+                "enable_tools": settings.enable_tools,
+                "max_context_turns": settings.max_context_turns,
+            },
+        )
+        result = self._run_planner_role(context=context, settings=settings)
+        return result.payload, result.raw_text
+
+    def _run_planner_role(self, *, context: RoleContext, settings: ChatSettings) -> RoleResult:
+        spec = self._make_role_spec(
+            "planner",
+            description="提炼目标、约束和执行计划。",
+            output_keys=["objective", "constraints", "plan", "watchouts", "success_signals"],
+        )
         fallback = {
-            "objective": self._shorten(user_message.strip(), 220),
+            "objective": self._shorten(context.user_message.strip(), 220),
             "constraints": [],
-            "plan": self._build_execution_plan(attachment_metas=attachment_metas, settings=settings),
+            "plan": self._build_execution_plan(attachment_metas=context.attachment_metas, settings=settings),
             "watchouts": [],
             "success_signals": [],
             "usage": self._empty_usage(),
-            "effective_model": requested_model,
+            "effective_model": context.requested_model,
             "notes": [],
         }
-        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
+        attachment_summary = self._summarize_attachment_metas_for_agents(context.attachment_metas)
         planner_input = "\n".join(
             [
-                f"user_message:\n{user_message.strip() or '(empty)'}",
-                f"history_summary:\n{summary.strip() or '(none)'}",
+                f"user_message:\n{context.user_message.strip() or '(empty)'}",
+                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
                 f"attachments:\n{attachment_summary}",
-                f"response_style={settings.response_style}",
-                f"enable_tools={settings.enable_tools}",
-                f"max_context_turns={settings.max_context_turns}",
+                f"response_style={context.extra.get('response_style') or settings.response_style}",
+                f"enable_tools={context.extra.get('enable_tools', settings.enable_tools)}",
+                f"max_context_turns={context.extra.get('max_context_turns', settings.max_context_turns)}",
             ]
         )
         messages = [
@@ -2174,7 +2391,7 @@ class OfficeAgent:
         try:
             ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=requested_model,
+                model=context.requested_model,
                 max_output_tokens=900,
                 enable_tools=False,
             )
@@ -2184,7 +2401,7 @@ class OfficeAgent:
                 fallback["notes"] = ["Planner 未返回标准 JSON，已降级为默认执行计划。", *notes]
                 fallback["usage"] = self._extract_usage_from_message(ai_msg)
                 fallback["effective_model"] = effective_model
-                return fallback, raw_text
+                return self._make_role_result(spec, context, fallback, raw_text)
 
             planner = {
                 "objective": str(parsed.get("objective") or fallback["objective"]).strip() or fallback["objective"],
@@ -2198,10 +2415,11 @@ class OfficeAgent:
                 "effective_model": effective_model,
                 "notes": notes,
             }
-            return planner, raw_text
+            return self._make_role_result(spec, context, planner, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"Planner 调用失败，已回退默认计划: {self._shorten(exc, 180)}"]
-            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return self._make_role_result(spec, context, fallback, raw_text)
 
     def _run_answer_conflict_detector(
         self,
@@ -2212,23 +2430,47 @@ class OfficeAgent:
         history_summary: str,
         attachment_metas: list[dict[str, Any]],
         final_text: str,
-        planner_brief: dict[str, Any],
+        planner_brief: RoleResult | dict[str, Any],
         tool_events: list[ToolEvent],
         spec_lookup_request: bool = False,
         evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
-        validation_context = self._summarize_validation_context(tool_events)
-        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
-        tool_summaries = self._summarize_tool_events_for_review(tool_events, limit=10)
+        context = self._make_role_context(
+            "conflict_detector",
+            requested_model=requested_model,
+            user_message=user_message,
+            effective_user_message=effective_user_message,
+            history_summary=history_summary,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_brief,
+            response_text=final_text,
+            extra={
+                "spec_lookup_request": spec_lookup_request,
+                "evidence_required_mode": evidence_required_mode,
+            },
+        )
+        result = self._run_answer_conflict_detector_role(context=context)
+        return result.payload, result.raw_text
+
+    def _run_answer_conflict_detector_role(self, *, context: RoleContext) -> RoleResult:
+        spec = self._make_role_spec(
+            "conflict_detector",
+            description="检查答案是否与通识或成熟工程知识明显冲突。",
+            output_keys=["has_conflict", "confidence", "summary", "concerns", "suggested_checks"],
+        )
+        validation_context = self._summarize_validation_context(context.tool_events)
+        attachment_summary = self._summarize_attachment_metas_for_agents(context.attachment_metas)
+        tool_summaries = self._summarize_tool_events_for_review(context.tool_events, limit=10)
         detector_input = "\n".join(
             [
-                f"effective_user_request:\n{effective_user_message.strip() or user_message.strip() or '(empty)'}",
-                f"raw_user_message:\n{user_message.strip() or '(empty)'}",
-                f"history_summary:\n{history_summary.strip() or '(none)'}",
+                f"effective_user_request:\n{context.primary_user_request or '(empty)'}",
+                f"raw_user_message:\n{context.user_message.strip() or '(empty)'}",
+                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
                 f"attachments:\n{attachment_summary}",
-                f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
-                f"spec_lookup_request={str(spec_lookup_request).lower()}",
-                f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                f"planner_objective:\n{str(context.planner_brief.get('objective') or '').strip() or '(none)'}",
+                f"spec_lookup_request={str(bool(context.extra.get('spec_lookup_request'))).lower()}",
+                f"evidence_required_mode={str(bool(context.extra.get('evidence_required_mode'))).lower()}",
                 f"web_tools_used={str(validation_context['web_tools_used']).lower()}",
                 f"web_tools_success={str(validation_context['web_tools_success']).lower()}",
                 "web_tool_notes:",
@@ -2237,7 +2479,7 @@ class OfficeAgent:
                 *[f"- {item}" for item in validation_context["web_tool_warnings"]],
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
-                f"answer:\n{final_text.strip() or '(empty)'}",
+                f"answer:\n{context.response_text.strip() or '(empty)'}",
             ]
         )
         fallback = {
@@ -2247,7 +2489,7 @@ class OfficeAgent:
             "concerns": [],
             "suggested_checks": [],
             "usage": self._empty_usage(),
-            "effective_model": requested_model,
+            "effective_model": context.requested_model,
             "notes": [],
         }
         messages = [
@@ -2273,7 +2515,7 @@ class OfficeAgent:
         try:
             ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=requested_model,
+                model=context.requested_model,
                 max_output_tokens=900,
                 enable_tools=False,
             )
@@ -2283,7 +2525,7 @@ class OfficeAgent:
                 fallback["notes"] = ["Conflict Detector 未返回标准 JSON，已忽略冲突检查结果。", *notes]
                 fallback["usage"] = self._extract_usage_from_message(ai_msg)
                 fallback["effective_model"] = effective_model
-                return fallback, raw_text
+                return self._make_role_result(spec, context, fallback, raw_text)
 
             has_conflict_raw = parsed.get("has_conflict")
             if isinstance(has_conflict_raw, bool):
@@ -2305,10 +2547,11 @@ class OfficeAgent:
                 "effective_model": effective_model,
                 "notes": notes,
             }
-            return detector, raw_text
+            return self._make_role_result(spec, context, detector, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"Conflict Detector 调用失败，已跳过: {self._shorten(exc, 180)}"]
-            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return self._make_role_result(spec, context, fallback, raw_text)
 
     def _run_reviewer(
         self,
@@ -2319,37 +2562,70 @@ class OfficeAgent:
         history_summary: str,
         attachment_metas: list[dict[str, Any]],
         final_text: str,
-        planner_brief: dict[str, Any],
+        planner_brief: RoleResult | dict[str, Any],
         tool_events: list[ToolEvent],
         execution_trace: list[str],
         spec_lookup_request: bool = False,
         evidence_required_mode: bool = False,
-        conflict_brief: dict[str, Any] | None = None,
+        conflict_brief: RoleResult | dict[str, Any] | None = None,
         debug_cb: Callable[[str, str, str], None] | None = None,
         trace_cb: Callable[[str], None] | None = None,
     ) -> tuple[dict[str, Any], str]:
-        tool_summaries = self._summarize_tool_events_for_review(tool_events, limit=12)
-        write_actions = self._summarize_write_tool_events(tool_events, limit=6)
-        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
-        validation_context = self._summarize_validation_context(tool_events)
-        local_access_succeeded = self._has_successful_local_file_access(tool_events)
+        context = self._make_role_context(
+            "reviewer",
+            requested_model=requested_model,
+            user_message=user_message,
+            effective_user_message=effective_user_message,
+            history_summary=history_summary,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_brief,
+            conflict_brief=conflict_brief or {},
+            execution_trace=execution_trace,
+            response_text=final_text,
+            extra={
+                "spec_lookup_request": spec_lookup_request,
+                "evidence_required_mode": evidence_required_mode,
+            },
+        )
+        result = self._run_reviewer_role(context=context, debug_cb=debug_cb, trace_cb=trace_cb)
+        return result.payload, result.raw_text
+
+    def _run_reviewer_role(
+        self,
+        *,
+        context: RoleContext,
+        debug_cb: Callable[[str, str, str], None] | None = None,
+        trace_cb: Callable[[str], None] | None = None,
+    ) -> RoleResult:
+        spec = self._make_role_spec(
+            "reviewer",
+            description="对最终答复做覆盖度、证据链和风险审阅。",
+            tool_names=self._reviewer_readonly_tool_names(),
+            output_keys=["verdict", "confidence", "summary", "strengths", "risks", "followups"],
+        )
+        tool_summaries = self._summarize_tool_events_for_review(context.tool_events, limit=12)
+        write_actions = self._summarize_write_tool_events(context.tool_events, limit=6)
+        attachment_summary = self._summarize_attachment_metas_for_agents(context.attachment_metas)
+        validation_context = self._summarize_validation_context(context.tool_events)
+        local_access_succeeded = self._has_successful_local_file_access(context.tool_events)
         conflict_lines = [
-            f"conflict_has_conflict={str(bool((conflict_brief or {}).get('has_conflict'))).lower()}",
-            f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
+            f"conflict_has_conflict={str(bool(context.conflict_brief.get('has_conflict'))).lower()}",
+            f"conflict_summary={str(context.conflict_brief.get('summary') or '').strip() or '(none)'}",
             "conflict_concerns:",
-            *[f"- {item}" for item in self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4)],
+            *[f"- {item}" for item in self._normalize_string_list(context.conflict_brief.get("concerns") or [], limit=4)],
         ]
         reviewer_input = "\n".join(
             [
-                f"effective_user_request:\n{effective_user_message.strip() or user_message.strip() or '(empty)'}",
-                f"raw_user_message:\n{user_message.strip() or '(empty)'}",
-                f"history_summary:\n{history_summary.strip() or '(none)'}",
+                f"effective_user_request:\n{context.primary_user_request or '(empty)'}",
+                f"raw_user_message:\n{context.user_message.strip() or '(empty)'}",
+                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
                 f"attachments:\n{attachment_summary}",
-                f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
+                f"planner_objective:\n{str(context.planner_brief.get('objective') or '').strip() or '(none)'}",
                 "planner_plan:",
-                *[f"- {item}" for item in self._normalize_string_list(planner_brief.get("plan") or [], limit=6)],
-                f"task_mode={'spec_lookup' if spec_lookup_request else 'general'}",
-                f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                *[f"- {item}" for item in self._normalize_string_list(context.planner_brief.get("plan") or [], limit=6)],
+                f"task_mode={'spec_lookup' if context.extra.get('spec_lookup_request') else 'general'}",
+                f"evidence_required_mode={str(bool(context.extra.get('evidence_required_mode'))).lower()}",
                 f"web_tools_used={str(validation_context['web_tools_used']).lower()}",
                 f"web_tools_success={str(validation_context['web_tools_success']).lower()}",
                 "web_tool_notes:",
@@ -2362,8 +2638,8 @@ class OfficeAgent:
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
                 "execution_trace_tail:",
-                *[f"- {line}" for line in execution_trace[-8:]],
-                f"final_text:\n{final_text.strip() or '(empty)'}",
+                *[f"- {line}" for line in context.execution_trace[-8:]],
+                f"final_text:\n{context.response_text.strip() or '(empty)'}",
             ]
         )
         fallback = {
@@ -2374,10 +2650,10 @@ class OfficeAgent:
             "risks": [],
             "followups": [],
             "usage": self._empty_usage(),
-            "effective_model": requested_model,
+            "effective_model": context.requested_model,
             "notes": [],
         }
-        readonly_tools = self._reviewer_readonly_tool_names()
+        readonly_tools = list(spec.tool_names)
         reviewer_system_prompt = (
             "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
             "如果 raw_user_message 看起来只是短跟进/纠偏，而 effective_user_request 延续了上一轮完整目标，"
@@ -2415,9 +2691,7 @@ class OfficeAgent:
             "verdict 只能是 pass, warn, block；confidence 只能是 high, medium, low。"
         )
         messages = [
-            self._SystemMessage(
-                content=reviewer_system_prompt
-            ),
+            self._SystemMessage(content=reviewer_system_prompt),
             self._HumanMessage(content=reviewer_input),
         ]
         try:
@@ -2427,14 +2701,14 @@ class OfficeAgent:
             reviewer_evidence: list[str] = []
             ai_msg, runner, effective_model, invoke_notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=requested_model,
+                model=context.requested_model,
                 max_output_tokens=1200,
                 enable_tools=True,
                 tool_names=readonly_tools,
             )
             notes.extend(invoke_notes)
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-            nudge_budget = 1 if (evidence_required_mode or bool(attachment_metas) or local_access_succeeded) else 0
+            nudge_budget = 1 if (bool(context.extra.get("evidence_required_mode")) or bool(context.attachment_metas) or local_access_succeeded) else 0
             for _ in range(12):
                 tool_calls = getattr(ai_msg, "tool_calls", None) or []
                 if not tool_calls:
@@ -2545,19 +2819,19 @@ class OfficeAgent:
                 fallback["notes"] = ["Reviewer 未返回标准 JSON，已按保守策略记录。", *notes]
                 fallback["usage"] = usage_total
                 fallback["effective_model"] = effective_model
-                return fallback, raw_text
+                return self._make_role_result(spec, context, fallback, raw_text)
 
             verdict = self._normalize_reviewer_verdict(
                 parsed.get("verdict"),
                 risks=parsed.get("risks") or [],
                 followups=parsed.get("followups") or [],
-                spec_lookup_request=spec_lookup_request,
-                evidence_required_mode=evidence_required_mode,
+                spec_lookup_request=bool(context.extra.get("spec_lookup_request")),
+                evidence_required_mode=bool(context.extra.get("evidence_required_mode")),
                 readonly_checks=reviewer_tool_names,
-                conflict_has_conflict=bool((conflict_brief or {}).get("has_conflict")),
-                conflict_realtime_only=self._conflict_is_realtime_capability_warning(conflict_brief),
+                conflict_has_conflict=bool(context.conflict_brief.get("has_conflict")),
+                conflict_realtime_only=self._conflict_is_realtime_capability_warning(context.conflict_brief),
                 web_tools_success=bool(validation_context["web_tools_success"]),
-                attachment_context_available=bool(attachment_metas) or local_access_succeeded,
+                attachment_context_available=bool(context.attachment_metas) or local_access_succeeded,
             )
             confidence = str(parsed.get("confidence") or "medium").strip().lower()
             if confidence not in {"high", "medium", "low"}:
@@ -2575,10 +2849,11 @@ class OfficeAgent:
                 "readonly_checks": reviewer_tool_names,
                 "readonly_evidence": reviewer_evidence,
             }
-            return reviewer, raw_text
+            return self._make_role_result(spec, context, reviewer, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"Reviewer 调用失败，已跳过最终审阅: {self._shorten(exc, 180)}"]
-            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return self._make_role_result(spec, context, fallback, raw_text)
 
     def _run_revision(
         self,
@@ -2589,54 +2864,77 @@ class OfficeAgent:
         history_summary: str,
         attachment_metas: list[dict[str, Any]],
         current_text: str,
-        planner_brief: dict[str, Any],
-        reviewer_brief: dict[str, Any],
+        planner_brief: RoleResult | dict[str, Any],
+        reviewer_brief: RoleResult | dict[str, Any],
         tool_events: list[ToolEvent],
-        conflict_brief: dict[str, Any] | None = None,
+        conflict_brief: RoleResult | dict[str, Any] | None = None,
         evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
-        local_access_succeeded = self._has_successful_local_file_access(tool_events)
-        tool_summaries = self._summarize_tool_events_for_review(tool_events, limit=10)
-        write_actions = self._summarize_write_tool_events(tool_events, limit=6)
-        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
+        context = self._make_role_context(
+            "revision",
+            requested_model=requested_model,
+            user_message=user_message,
+            effective_user_message=effective_user_message,
+            history_summary=history_summary,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_brief,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief or {},
+            response_text=current_text,
+            extra={"evidence_required_mode": evidence_required_mode},
+        )
+        result = self._run_revision_role(context=context)
+        return result.payload, result.raw_text
+
+    def _run_revision_role(self, *, context: RoleContext) -> RoleResult:
+        spec = self._make_role_spec(
+            "revision",
+            description="根据 reviewer 结论修订最终答复。",
+            output_keys=["changed", "summary", "key_changes", "final_answer"],
+        )
+        local_access_succeeded = self._has_successful_local_file_access(context.tool_events)
+        tool_summaries = self._summarize_tool_events_for_review(context.tool_events, limit=10)
+        write_actions = self._summarize_write_tool_events(context.tool_events, limit=6)
+        attachment_summary = self._summarize_attachment_metas_for_agents(context.attachment_metas)
         revision_input = "\n".join(
             [
-                f"effective_user_request:\n{effective_user_message.strip() or user_message.strip() or '(empty)'}",
-                f"raw_user_message:\n{user_message.strip() or '(empty)'}",
-                f"history_summary:\n{history_summary.strip() or '(none)'}",
+                f"effective_user_request:\n{context.primary_user_request or '(empty)'}",
+                f"raw_user_message:\n{context.user_message.strip() or '(empty)'}",
+                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
                 f"attachments:\n{attachment_summary}",
-                f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
-                f"reviewer_verdict={str(reviewer_brief.get('verdict') or 'pass').strip()}",
-                f"reviewer_confidence={str(reviewer_brief.get('confidence') or 'medium').strip()}",
-                f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                f"planner_objective:\n{str(context.planner_brief.get('objective') or '').strip() or '(none)'}",
+                f"reviewer_verdict={str(context.reviewer_brief.get('verdict') or 'pass').strip()}",
+                f"reviewer_confidence={str(context.reviewer_brief.get('confidence') or 'medium').strip()}",
+                f"evidence_required_mode={str(bool(context.extra.get('evidence_required_mode'))).lower()}",
                 "reviewer_risks:",
-                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("risks") or [], limit=5)],
+                *[f"- {item}" for item in self._normalize_string_list(context.reviewer_brief.get("risks") or [], limit=5)],
                 "reviewer_followups:",
-                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("followups") or [], limit=4)],
+                *[f"- {item}" for item in self._normalize_string_list(context.reviewer_brief.get("followups") or [], limit=4)],
                 "reviewer_readonly_checks:",
-                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("readonly_checks") or [], limit=8)],
+                *[f"- {item}" for item in self._normalize_string_list(context.reviewer_brief.get("readonly_checks") or [], limit=8)],
                 "reviewer_readonly_evidence:",
                 *[
                     f"- {item}"
-                    for item in self._normalize_string_list(reviewer_brief.get("readonly_evidence") or [], limit=8)
+                    for item in self._normalize_string_list(context.reviewer_brief.get("readonly_evidence") or [], limit=8)
                 ],
-                f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
+                f"conflict_summary={str(context.conflict_brief.get('summary') or '').strip() or '(none)'}",
                 "conflict_concerns:",
-                *[f"- {item}" for item in self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4)],
+                *[f"- {item}" for item in self._normalize_string_list(context.conflict_brief.get("concerns") or [], limit=4)],
                 "write_actions:",
                 *(write_actions or ["(none)"]),
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
-                f"current_answer:\n{current_text.strip() or '(empty)'}",
+                f"current_answer:\n{context.response_text.strip() or '(empty)'}",
             ]
         )
         fallback = {
             "changed": False,
             "summary": "Revision 未修改最终答复。",
             "key_changes": [],
-            "final_answer": current_text,
+            "final_answer": context.response_text,
             "usage": self._empty_usage(),
-            "effective_model": requested_model,
+            "effective_model": context.requested_model,
             "notes": [],
         }
         revision_system_prompt = (
@@ -2671,15 +2969,13 @@ class OfficeAgent:
             "changed 必须是 true 或 false；key_changes 最多 4 条。"
         )
         messages = [
-            self._SystemMessage(
-                content=revision_system_prompt
-            ),
+            self._SystemMessage(content=revision_system_prompt),
             self._HumanMessage(content=revision_input),
         ]
         try:
             ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=requested_model,
+                model=context.requested_model,
                 max_output_tokens=1800,
                 enable_tools=False,
             )
@@ -2689,16 +2985,16 @@ class OfficeAgent:
                 fallback["notes"] = ["Revision 未返回标准 JSON，已保留原答复。", *notes]
                 fallback["usage"] = self._extract_usage_from_message(ai_msg)
                 fallback["effective_model"] = effective_model
-                return fallback, raw_text
+                return self._make_role_result(spec, context, fallback, raw_text)
 
             changed_raw = parsed.get("changed")
             if isinstance(changed_raw, bool):
                 changed = changed_raw
             else:
                 changed = str(changed_raw or "").strip().lower() in {"1", "true", "yes", "on"}
-            final_answer = str(parsed.get("final_answer") or current_text).strip() or current_text
+            final_answer = str(parsed.get("final_answer") or context.response_text).strip() or context.response_text
             revision = {
-                "changed": changed and final_answer.strip() != current_text.strip(),
+                "changed": changed and final_answer.strip() != context.response_text.strip(),
                 "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
                 "key_changes": self._normalize_string_list(parsed.get("key_changes") or [], limit=4, item_limit=180),
                 "final_answer": final_answer,
@@ -2706,10 +3002,11 @@ class OfficeAgent:
                 "effective_model": effective_model,
                 "notes": notes,
             }
-            return revision, raw_text
+            return self._make_role_result(spec, context, revision, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"Revision 调用失败，已保留原答复: {self._shorten(exc, 180)}"]
-            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return self._make_role_result(spec, context, fallback, raw_text)
 
     def _sanitize_final_answer_text(
         self,
@@ -2778,14 +3075,34 @@ class OfficeAgent:
         requested_model: str,
         final_text: str,
         citations: list[dict[str, Any]],
-        reviewer_brief: dict[str, Any],
-        conflict_brief: dict[str, Any] | None = None,
+        reviewer_brief: RoleResult | dict[str, Any],
+        conflict_brief: RoleResult | dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
+        context = self._make_role_context(
+            "structurer",
+            requested_model=requested_model,
+            reviewer_brief=self._role_payload_dict(reviewer_brief),
+            conflict_brief=self._role_payload_dict(conflict_brief),
+            response_text=final_text,
+            extra={"citations": citations},
+        )
+        result = self._run_answer_structurer_role(context=context)
+        return result.payload, result.raw_text
+
+    def _run_answer_structurer_role(self, *, context: RoleContext) -> RoleResult:
+        spec = self._make_role_spec(
+            "structurer",
+            description="把最终答复整理成结构化证据包。",
+            output_keys=["summary", "claims", "warnings", "citations"],
+        )
+        citations = list(context.extra.get("citations") or [])
+        reviewer_payload = context.reviewer_brief
+        conflict_payload = context.conflict_brief
         fallback = self._fallback_answer_bundle(
-            final_text=final_text,
+            final_text=context.response_text,
             citations=citations,
-            reviewer_brief=reviewer_brief,
-            conflict_brief=conflict_brief,
+            reviewer_brief=reviewer_payload,
+            conflict_brief=conflict_payload,
         )
         citation_lines: list[str] = []
         for item in citations[:10]:
@@ -2806,13 +3123,13 @@ class OfficeAgent:
             )
         structurer_input = "\n".join(
             [
-                f"final_answer:\n{final_text.strip() or '(empty)'}",
-                f"reviewer_verdict={str(reviewer_brief.get('verdict') or 'pass').strip()}",
+                f"final_answer:\n{context.response_text.strip() or '(empty)'}",
+                f"reviewer_verdict={str(reviewer_payload.get('verdict') or 'pass').strip()}",
                 "reviewer_risks:",
-                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("risks") or [], limit=4)],
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_payload.get("risks") or [], limit=4)],
                 "reviewer_followups:",
-                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("followups") or [], limit=4)],
-                f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_payload.get("followups") or [], limit=4)],
+                f"conflict_summary={str(conflict_payload.get('summary') or '').strip() or '(none)'}",
                 "citations:",
                 *(citation_lines or ["(none)"]),
             ]
@@ -2839,7 +3156,7 @@ class OfficeAgent:
         try:
             ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=requested_model,
+                model=context.requested_model,
                 max_output_tokens=1400,
                 enable_tools=False,
             )
@@ -2849,7 +3166,11 @@ class OfficeAgent:
                 fallback["notes"] = ["Structurer 未返回标准 JSON，已使用后端降级结构化结果。", *notes]
                 fallback["usage"] = self._extract_usage_from_message(ai_msg)
                 fallback["effective_model"] = effective_model
-                return self._strip_answer_bundle_meta(fallback), raw_text
+                bundle = self._strip_answer_bundle_meta(fallback)
+                bundle["usage"] = fallback["usage"]
+                bundle["effective_model"] = fallback["effective_model"]
+                bundle["notes"] = fallback["notes"]
+                return self._make_role_result(spec, context, bundle, raw_text)
 
             valid_ids = {str(item.get("id") or "").strip() for item in citations}
             citations_by_id = {
@@ -2895,19 +3216,32 @@ class OfficeAgent:
                 "effective_model": effective_model,
                 "notes": notes,
             }
-            return self._strip_answer_bundle_meta(bundle), raw_text
+            bundle = self._strip_answer_bundle_meta(bundle) | {
+                "usage": bundle["usage"],
+                "effective_model": bundle["effective_model"],
+                "notes": bundle["notes"],
+            }
+            return self._make_role_result(spec, context, bundle, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"Structurer 调用失败，已回退后端结构化结果: {self._shorten(exc, 180)}"]
-            return self._strip_answer_bundle_meta(fallback), json.dumps({"error": str(exc)}, ensure_ascii=False)
+            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            bundle = self._strip_answer_bundle_meta(fallback) | {
+                "usage": fallback["usage"],
+                "effective_model": fallback["effective_model"],
+                "notes": fallback["notes"],
+            }
+            return self._make_role_result(spec, context, bundle, raw_text)
 
     def _fallback_answer_bundle(
         self,
         *,
         final_text: str,
         citations: list[dict[str, Any]],
-        reviewer_brief: dict[str, Any],
-        conflict_brief: dict[str, Any] | None = None,
+        reviewer_brief: RoleResult | dict[str, Any],
+        conflict_brief: RoleResult | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        reviewer_payload = self._role_payload_dict(reviewer_brief)
+        conflict_payload = self._role_payload_dict(conflict_brief)
         summary = self._extract_answer_summary(final_text)
         citations_by_id = {
             str(item.get("id") or "").strip(): item for item in citations if str(item.get("id") or "").strip()
@@ -2935,9 +3269,9 @@ class OfficeAgent:
                 )
             )
         warnings = self._normalize_string_list(
-            list(reviewer_brief.get("risks") or [])
-            + list(reviewer_brief.get("followups") or [])
-            + list((conflict_brief or {}).get("concerns") or []),
+            list(reviewer_payload.get("risks") or [])
+            + list(reviewer_payload.get("followups") or [])
+            + list(conflict_payload.get("concerns") or []),
             limit=5,
             item_limit=220,
         )
@@ -3429,12 +3763,13 @@ class OfficeAgent:
         )
         return any(pattern in lowered for pattern in patterns)
 
-    def _reviewer_requests_more_evidence(self, reviewer_brief: dict[str, Any]) -> bool:
+    def _reviewer_requests_more_evidence(self, reviewer_brief: RoleResult | dict[str, Any]) -> bool:
+        reviewer_payload = self._role_payload_dict(reviewer_brief)
         lines = [
-            str(reviewer_brief.get("summary") or "").strip(),
-            *self._normalize_string_list(reviewer_brief.get("risks") or [], limit=6, item_limit=220),
-            *self._normalize_string_list(reviewer_brief.get("followups") or [], limit=6, item_limit=220),
-            *self._normalize_string_list(reviewer_brief.get("readonly_evidence") or [], limit=6, item_limit=220),
+            str(reviewer_payload.get("summary") or "").strip(),
+            *self._normalize_string_list(reviewer_payload.get("risks") or [], limit=6, item_limit=220),
+            *self._normalize_string_list(reviewer_payload.get("followups") or [], limit=6, item_limit=220),
+            *self._normalize_string_list(reviewer_payload.get("readonly_evidence") or [], limit=6, item_limit=220),
         ]
         lowered = " ".join(line.lower() for line in lines if line).strip()
         if not lowered:
@@ -3518,10 +3853,11 @@ class OfficeAgent:
         self,
         *,
         route: dict[str, Any],
-        reviewer_brief: dict[str, Any],
+        reviewer_brief: RoleResult | dict[str, Any],
         tool_events: list[ToolEvent],
     ) -> bool:
-        verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
+        reviewer_payload = self._role_payload_dict(reviewer_brief)
+        verdict = str(reviewer_payload.get("verdict") or "pass").strip().lower()
         if verdict not in {"warn", "block"}:
             return False
         task_type = str(route.get("task_type") or "").strip()
@@ -3673,13 +4009,14 @@ class OfficeAgent:
                 break
         return out
 
-    def _format_planner_system_hint(self, planner_brief: dict[str, Any]) -> str:
-        objective = str(planner_brief.get("objective") or "").strip()
-        constraints = self._normalize_string_list(planner_brief.get("constraints") or [], limit=5, item_limit=180)
-        plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=6, item_limit=180)
-        watchouts = self._normalize_string_list(planner_brief.get("watchouts") or [], limit=4, item_limit=180)
+    def _format_planner_system_hint(self, planner_brief: RoleResult | dict[str, Any]) -> str:
+        planner_payload = self._role_payload_dict(planner_brief)
+        objective = str(planner_payload.get("objective") or "").strip()
+        constraints = self._normalize_string_list(planner_payload.get("constraints") or [], limit=5, item_limit=180)
+        plan = self._normalize_string_list(planner_payload.get("plan") or [], limit=6, item_limit=180)
+        watchouts = self._normalize_string_list(planner_payload.get("watchouts") or [], limit=4, item_limit=180)
         success_signals = self._normalize_string_list(
-            planner_brief.get("success_signals") or [], limit=4, item_limit=180
+            planner_payload.get("success_signals") or [], limit=4, item_limit=180
         )
         lines = ["多 Role 协调摘要（来自 Planner）："]
         if objective:
@@ -3837,33 +4174,53 @@ class OfficeAgent:
         route: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         specialist = str(specialist or "").strip().lower()
-        initial_triage_request = self._looks_like_initial_content_triage_request(user_message)
+        context = self._make_role_context(
+            specialist,
+            requested_model=requested_model,
+            user_message=user_message,
+            history_summary=summary,
+            attachment_metas=attachment_metas,
+            route=route,
+            user_content=user_content,
+        )
+        result = self._run_specialist_with_context(context=context)
+        return result.payload, result.raw_text
+
+    def _run_specialist_with_context(self, *, context: RoleContext) -> RoleResult:
+        specialist = context.role
+        initial_triage_request = self._looks_like_initial_content_triage_request(context.user_message)
+        spec = self._make_role_spec(
+            specialist,
+            description=f"{_SPECIALIST_LABELS.get(specialist, specialist)} 专门简报生成。",
+            output_keys=["summary", "bullets", "worker_hint", "queries"],
+        )
         fallback = self._specialist_fallback(
             specialist=specialist,
-            requested_model=requested_model,
-            attachment_metas=attachment_metas,
+            requested_model=context.requested_model,
+            attachment_metas=context.attachment_metas,
             initial_triage_request=initial_triage_request,
         )
         if specialist not in _SPECIALIST_LABELS:
             fallback["notes"] = [f"未知专门角色: {specialist}"]
-            return fallback, json.dumps({"error": "unknown specialist"}, ensure_ascii=False)
+            raw_text = json.dumps({"error": "unknown specialist"}, ensure_ascii=False)
+            return self._make_role_result(spec, context, fallback, raw_text)
 
-        payload_preview = self._shorten(self._content_to_text(user_content), 16000)
+        payload_preview = self._shorten(self._content_to_text(context.user_content), 16000)
         route_summary = json.dumps(
             {
-                "task_type": route.get("task_type"),
-                "complexity": route.get("complexity"),
-                "use_worker_tools": bool(route.get("use_worker_tools")),
-                "use_reviewer": bool(route.get("use_reviewer")),
+                "task_type": context.route.get("task_type"),
+                "complexity": context.route.get("complexity"),
+                "use_worker_tools": bool(context.route.get("use_worker_tools")),
+                "use_reviewer": bool(context.route.get("use_reviewer")),
             },
             ensure_ascii=False,
         )
         specialist_input = "\n".join(
             [
-                f"user_message:\n{user_message.strip() or '(empty)'}",
-                f"history_summary:\n{summary.strip() or '(none)'}",
+                f"user_message:\n{context.user_message.strip() or '(empty)'}",
+                f"history_summary:\n{context.history_summary.strip() or '(none)'}",
                 f"route:\n{route_summary}",
-                f"attachments:\n{self._summarize_attachment_metas_for_agents(attachment_metas)}",
+                f"attachments:\n{self._summarize_attachment_metas_for_agents(context.attachment_metas)}",
                 f"context_preview:\n{payload_preview or '(empty)'}",
             ]
         )
@@ -3915,7 +4272,7 @@ class OfficeAgent:
         try:
             ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=self.config.summary_model or requested_model,
+                model=self.config.summary_model or context.requested_model,
                 max_output_tokens=900,
                 enable_tools=False,
             )
@@ -3926,7 +4283,7 @@ class OfficeAgent:
                 fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 未返回标准 JSON，已回退默认简报。", *notes]
                 fallback["usage"] = usage
                 fallback["effective_model"] = effective_model
-                return fallback, raw_text
+                return self._make_role_result(spec, context, fallback, raw_text)
             brief = {
                 "role": specialist,
                 "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
@@ -3957,18 +4314,20 @@ class OfficeAgent:
                     "如果用户只是先确认你能不能理解内容，也要直接给高信息量摘要，不要停留在能力确认。"
                     + (f" {worker_hint}" if worker_hint else "")
                 ).strip()
-            return brief, raw_text
+            return self._make_role_result(spec, context, brief, raw_text)
         except Exception as exc:
             fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 调用失败，已回退默认简报: {self._shorten(exc, 180)}"]
-            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return self._make_role_result(spec, context, fallback, raw_text)
 
-    def _format_specialist_system_hint(self, specialist: str, brief: dict[str, Any]) -> str:
+    def _format_specialist_system_hint(self, specialist: str, brief: RoleResult | dict[str, Any]) -> str:
+        brief_payload = self._role_payload_dict(brief)
         label = _SPECIALIST_LABELS.get(specialist, specialist)
         lines = [f"专门角色摘要（来自 {label}）："]
-        summary = str(brief.get("summary") or "").strip()
-        bullets = self._normalize_string_list(brief.get("bullets") or [], limit=5, item_limit=180)
-        worker_hint = str(brief.get("worker_hint") or "").strip()
-        queries = self._normalize_string_list(brief.get("queries") or [], limit=4, item_limit=80)
+        summary = str(brief_payload.get("summary") or "").strip()
+        bullets = self._normalize_string_list(brief_payload.get("bullets") or [], limit=5, item_limit=180)
+        worker_hint = str(brief_payload.get("worker_hint") or "").strip()
+        queries = self._normalize_string_list(brief_payload.get("queries") or [], limit=4, item_limit=80)
         if summary:
             lines.append(f"摘要: {summary}")
         if bullets:
@@ -4399,10 +4758,11 @@ class OfficeAgent:
         )
         return any(pattern in raw for pattern in patterns)
 
-    def _conflict_is_realtime_capability_warning(self, conflict_brief: dict[str, Any] | None) -> bool:
+    def _conflict_is_realtime_capability_warning(self, conflict_brief: RoleResult | dict[str, Any] | None) -> bool:
+        conflict_payload = self._role_payload_dict(conflict_brief)
         lines = [
-            str((conflict_brief or {}).get("summary") or "").strip(),
-            *self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4, item_limit=200),
+            str(conflict_payload.get("summary") or "").strip(),
+            *self._normalize_string_list(conflict_payload.get("concerns") or [], limit=4, item_limit=200),
         ]
         text = " ".join(item.lower() for item in lines if item).strip()
         if not text:
