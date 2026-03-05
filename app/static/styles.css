@@ -392,16 +392,21 @@ body.panel-debug-off .role-card {
 }
 
 .role-card.is-seen {
-  border-color: #a9c4ae;
+  border-color: #8da9d4;
   background:
-    linear-gradient(180deg, rgba(252, 255, 251, 0.98), rgba(231, 243, 232, 0.96)),
+    linear-gradient(180deg, rgba(251, 253, 255, 0.98), rgba(232, 240, 252, 0.96)),
     repeating-linear-gradient(
       90deg,
-      rgba(28, 51, 39, 0.03) 0,
-      rgba(28, 51, 39, 0.03) 1px,
+      rgba(25, 55, 102, 0.035) 0,
+      rgba(25, 55, 102, 0.035) 1px,
       transparent 1px,
       transparent 11px
     );
+  box-shadow: 0 0 0 1px rgba(72, 114, 186, 0.14), 0 9px 20px rgba(34, 72, 132, 0.11);
+}
+
+.role-card.is-seen .role-sprite-wrap {
+  border-color: #a8c0e9;
 }
 
 .role-card.is-active {
@@ -530,9 +535,10 @@ body.panel-debug-off .role-card {
 }
 
 .role-state.seen {
-  background: #eef5ea;
-  border-color: #c8dac7;
-  color: #456353;
+  background: #e8f0ff;
+  border-color: #97b2e1;
+  color: #214d93;
+  font-weight: 600;
 }
 
 .role-state.idle {
