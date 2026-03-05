@@ -1714,7 +1714,21 @@ class LocalToolExecutor:
                     full_text = extract_pdf_text_from_path(real_path, max_chars=1_000_000)
                 except Exception as exc:
                     full_text = f"[文档解析失败: {exc}]"
-            elif suffix in {".docx", ".msg", ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".atom", ".rss", ".xml"}:
+            elif suffix in {
+                ".docx",
+                ".msg",
+                ".xlsx",
+                ".xlsm",
+                ".xltx",
+                ".xltm",
+                ".xls",
+                ".pptx",
+                ".pptm",
+                ".ppt",
+                ".atom",
+                ".rss",
+                ".xml",
+            }:
                 from app.attachments import extract_document_text  # lazy import
 
                 extracted = extract_document_text(str(real_path), max_chars=1_000_000) or ""
@@ -1725,6 +1739,8 @@ class LocalToolExecutor:
                     source_format = "msg_text_extracted"
                 elif suffix in {".xlsx", ".xlsm", ".xltx", ".xltm", ".xls"}:
                     source_format = "xlsx_text_extracted"
+                elif suffix in {".pptx", ".pptm", ".ppt"}:
+                    source_format = "pptx_text_extracted"
                 elif suffix in {".atom", ".rss", ".xml"}:
                     source_format = "xml_text_extracted"
             else:
@@ -1751,10 +1767,13 @@ class LocalToolExecutor:
                     else:
                         full_text = real_path.read_text(encoding="utf-8", errors="ignore")
                 elif head.startswith(b"PK\x03\x04"):
-                    from app.attachments import extract_document_text, looks_like_xlsx_file  # lazy import
+                    from app.attachments import extract_document_text, looks_like_pptx_file, looks_like_xlsx_file  # lazy import
 
                     if looks_like_xlsx_file(real_path):
                         source_format = "xlsx_text_extracted"
+                        full_text = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                    elif looks_like_pptx_file(real_path):
+                        source_format = "pptx_text_extracted"
                         full_text = extract_document_text(str(real_path), max_chars=1_000_000) or ""
                     else:
                         full_text = real_path.read_text(encoding="utf-8", errors="ignore")

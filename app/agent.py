@@ -93,6 +93,9 @@ _UNDERSTANDING_HINTS = (
     "总结下",
     "概括",
     "提炼",
+    "讲讲",
+    "讲一下",
+    "讲下",
     "解读",
     "解释",
     "说明",
@@ -765,6 +768,43 @@ class OfficeAgent:
                 {
                     "source": "backend_override",
                     "reason": "followup_execution_ack_forces_tool_continuation",
+                    "task_type": route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+        attachment_context_incomplete = any(
+            ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
+            for issue in attachment_issues
+        )
+        if (
+            attachment_context_incomplete
+            and settings.enable_tools
+            and not route.get("use_worker_tools")
+            and self._looks_like_understanding_request(planner_user_message)
+        ):
+            route = self._normalize_route_decision(
+                {
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
+                    "reason": "backend_attachment_context_incomplete_requires_tooling",
+                    "summary": "检测到附件仅注入了预览或解析失败，Coordinator 已切回 Worker 工具链先完成读取。",
+                    "source": "backend_override",
+                },
+                fallback=route,
+                settings=settings,
+            )
+            router_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "attachment_context_incomplete_requires_tooling",
                     "task_type": route.get("task_type"),
                 },
                 ensure_ascii=False,
@@ -5614,6 +5654,8 @@ class OfficeAgent:
             ".json",
             ".pdf",
             ".docx",
+            ".pptx",
+            ".pptm",
             ".xlsx",
             ".xlsm",
             ".xltx",
@@ -7340,6 +7382,12 @@ class OfficeAgent:
 
     def _request_likely_requires_tools(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         if any(self._attachment_needs_tooling(meta) for meta in attachment_metas):
+            return True
+        if any(
+            str(meta.get("kind") or "").strip().lower() == "document"
+            and not self._attachment_is_inline_parseable(meta)
+            for meta in attachment_metas
+        ):
             return True
         text = (user_message or "").strip().lower()
         if not text:

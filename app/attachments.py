@@ -14,6 +14,7 @@ _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _MSG_MARKERS_ASCII = (b"__substg1.0_", b"IPM.")
 _MSG_MARKERS_UTF16 = tuple(marker.decode("ascii").encode("utf-16-le") for marker in _MSG_MARKERS_ASCII)
 _XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+_PPTX_SUFFIXES = {".pptx", ".pptm"}
 
 
 def _read_plain_text(path: Path, max_chars: int) -> str:
@@ -60,6 +61,19 @@ def looks_like_xlsx_file(path: Path) -> bool:
         with zipfile.ZipFile(path, "r") as zf:
             names = set(zf.namelist())
         return "xl/workbook.xml" in names
+    except Exception:
+        return False
+
+
+def looks_like_pptx_file(path: Path) -> bool:
+    try:
+        if not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path, "r") as zf:
+            names = set(zf.namelist())
+        if "ppt/presentation.xml" not in names:
+            return False
+        return any(name.startswith("ppt/slides/slide") and name.endswith(".xml") for name in names)
     except Exception:
         return False
 
@@ -117,6 +131,104 @@ def _extract_xlsx(path: Path, max_chars: int) -> str:
             wb.close()
         except Exception:
             pass
+
+
+def _ppt_xml_to_lines(raw_xml: bytes, per_slide_limit: int = 40) -> list[str]:
+    try:
+        root = ET.fromstring(raw_xml)
+    except Exception:
+        return []
+    lines: list[str] = []
+    current: list[str] = []
+    for node in root.iter():
+        if _xml_local_name(node.tag) != "t":
+            continue
+        text = " ".join(str(node.text or "").split()).strip()
+        if not text:
+            continue
+        current.append(text)
+        # Keep nearby text runs together as one line.
+        if len(current) >= 12:
+            merged = " ".join(current).strip()
+            if merged:
+                lines.append(merged)
+            current = []
+        if len(lines) >= per_slide_limit:
+            break
+    if current and len(lines) < per_slide_limit:
+        merged = " ".join(current).strip()
+        if merged:
+            lines.append(merged)
+    # Deduplicate preserving order.
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return out
+
+
+def _extract_pptx(path: Path, max_chars: int) -> str:
+    if not zipfile.is_zipfile(path):
+        return "[PPTX 解析失败: 文件不是合法 ZIP 容器]"
+
+    with zipfile.ZipFile(path, "r") as zf:
+        names = zf.namelist()
+        slide_names = [
+            name
+            for name in names
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+        ]
+        if not slide_names:
+            return "[PPTX 解析结果为空: 未找到 slide XML]"
+
+        def sort_key(name: str) -> tuple[int, str]:
+            m = re.search(r"slide(\d+)\.xml$", name)
+            return (int(m.group(1)) if m else 10**9, name)
+
+        slide_names.sort(key=sort_key)
+
+        lines: list[str] = ["[PowerPoint 文档解析]"]
+        lines.append(f"幻灯片数量: {len(slide_names)}")
+        total = sum(len(x) for x in lines) + 1
+
+        for idx, slide_name in enumerate(slide_names, start=1):
+            try:
+                raw_xml = zf.read(slide_name)
+            except Exception:
+                raw_xml = b""
+            slide_lines = _ppt_xml_to_lines(raw_xml, per_slide_limit=36)
+            header = f"\n--- Slide {idx} ---"
+            if total + len(header) >= max_chars:
+                lines.append("\n[内容已截断，幻灯片内容较多]")
+                break
+            lines.append(header)
+            total += len(header)
+
+            if not slide_lines:
+                placeholder = "[未提取到文本（可能是纯图片页）]"
+                if total + len(placeholder) >= max_chars:
+                    lines.append("\n[内容已截断，幻灯片内容较多]")
+                    break
+                lines.append(placeholder)
+                total += len(placeholder)
+                continue
+
+            for line in slide_lines:
+                entry = f"- {line}"
+                if total + len(entry) + 1 >= max_chars:
+                    lines.append("\n[内容已截断，幻灯片内容较多]")
+                    break
+                lines.append(entry)
+                total += len(entry) + 1
+            else:
+                continue
+            break
+
+    return truncate_text("\n".join(lines), max_chars)
 
 
 def _html_to_text(html: str) -> str:
@@ -457,10 +569,16 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
             return _extract_docx(file_path, max_chars)
         if suffix in _XLSX_SUFFIXES:
             return _extract_xlsx(file_path, max_chars)
+        if suffix in _PPTX_SUFFIXES:
+            return _extract_pptx(file_path, max_chars)
         if suffix == ".xls":
             return "[暂不支持 .xls（二进制 Excel）直接解析，请先另存为 .xlsx 后再读取]"
+        if suffix == ".ppt":
+            return "[暂不支持 .ppt（二进制 PowerPoint）直接解析，请先另存为 .pptx 后再读取]"
         if suffix in {".zip", ".bin"} and looks_like_xlsx_file(file_path):
             return _extract_xlsx(file_path, max_chars)
+        if suffix in {".zip", ".bin"} and looks_like_pptx_file(file_path):
+            return _extract_pptx(file_path, max_chars)
         if suffix == ".msg" or looks_like_outlook_msg_file(file_path):
             return _extract_outlook_msg(file_path, max_chars)
     except Exception as exc:
