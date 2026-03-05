@@ -115,6 +115,43 @@ _UNDERSTANDING_HINTS = (
     "overview",
 )
 
+_MEETING_HINTS = (
+    "会议",
+    "例会",
+    "周会",
+    "晨会",
+    "复盘会",
+    "评审会",
+    "讨论会",
+    "meeting",
+    "standup",
+    "retro",
+    "sync",
+    "kickoff",
+    "1:1",
+)
+
+_MEETING_MINUTES_ACTION_HINTS = (
+    "会议纪要",
+    "会议记录",
+    "会议摘要",
+    "会议要点",
+    "会后纪要",
+    "整理纪要",
+    "整理成纪要",
+    "整理会议",
+    "提炼会议",
+    "action item",
+    "action items",
+    "meeting minutes",
+    "meeting notes",
+    "minutes",
+    "记录要点",
+    "待办项",
+    "决议",
+    "下一步",
+)
+
 _INLINE_DOC_CODE_FENCE_HINTS = (
     "```xml",
     "```html",
@@ -2227,6 +2264,9 @@ class OfficeAgent:
             tool_events=tool_events,
         )
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
+        if str(route.get("task_type") or "").strip().lower() == "meeting_minutes":
+            finalized_citations = []
+            add_trace("会议纪要模式：已关闭 citations（证据来源）展示，避免干扰记录型输出。")
         answer_bundle = self._fallback_answer_bundle(
             final_text=text,
             citations=finalized_citations,
@@ -5561,6 +5601,27 @@ class OfficeAgent:
             return False
         return any(hint in text for hint in _UNDERSTANDING_HINTS)
 
+    def _looks_like_meeting_minutes_request(self, user_message: str) -> bool:
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        if self._requires_evidence_mode(user_message, []):
+            return False
+
+        direct_phrases = (
+            "会议纪要",
+            "会议记录",
+            "meeting minutes",
+            "meeting notes",
+            "minutes of meeting",
+        )
+        if any(phrase in text for phrase in direct_phrases):
+            return True
+
+        has_meeting_context = any(hint in text for hint in _MEETING_HINTS)
+        has_minutes_intent = any(hint in text for hint in _MEETING_MINUTES_ACTION_HINTS)
+        return has_meeting_context and has_minutes_intent
+
     def _looks_like_inline_document_payload(self, user_message: str) -> bool:
         text = str(user_message or "").strip()
         if len(text) < 120:
@@ -5770,6 +5831,7 @@ class OfficeAgent:
         )
         inline_document_payload = self._looks_like_inline_document_payload(user_message)
         understanding_request = self._looks_like_understanding_request(user_message)
+        meeting_minutes_request = self._looks_like_meeting_minutes_request(user_message)
         has_url = "http://" in text or "https://" in text
         short_query_like = len(text) <= 280 and "\n" not in text
         explicit_web_intent = any(hint in text for hint in ("上网", "网上", "联网", "web research", "web_research"))
@@ -5845,6 +5907,28 @@ class OfficeAgent:
                     "specialists": ["file_reader"] if has_attachments else [],
                     "reason": "rules_code_generation_request",
                     "summary": "检测到代码生成/改写请求，直接交给 Worker 实现，不走事实审阅链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if meeting_minutes_request and not spec_lookup_request and not evidence_required and not web_request:
+            needs_attachment_tools = has_attachments and (attachment_needs_tooling or not inline_parseable_attachments)
+            use_tools = bool(settings.enable_tools and needs_attachment_tools)
+            return self._normalize_route_decision(
+                {
+                    "task_type": "meeting_minutes",
+                    "complexity": "medium" if has_attachments else "low",
+                    "use_planner": use_tools,
+                    "use_worker_tools": use_tools,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader", "summarizer"] if has_attachments else ["summarizer"],
+                    "reason": "rules_meeting_minutes_request",
+                    "summary": "检测到会议纪要整理任务，输出面向记录与执行项，不进入证据审计链。",
                 },
                 fallback=fallback,
                 settings=settings,
@@ -6219,6 +6303,12 @@ class OfficeAgent:
 
     def _router_system_hint(self, route: dict[str, Any]) -> str:
         task_type = str(route.get("task_type") or "standard").strip()
+        if task_type == "meeting_minutes":
+            return (
+                "本轮属于会议纪要整理任务。"
+                "优先输出会议目标、关键讨论、结论、待办与负责人。"
+                "不要改写成证据审计/查证报告格式，不要附加 claims 或 citations（证据来源）风格内容。"
+            )
         if task_type == "simple_understanding":
             return (
                 "本轮属于简单理解任务。"
