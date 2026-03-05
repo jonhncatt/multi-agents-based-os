@@ -849,6 +849,23 @@ class OfficeAgent:
                 },
                 ensure_ascii=False,
             )
+        if settings.enable_tools and bool(route.get("use_worker_tools")) and not self._coordinator_tools_enabled(execution_state):
+            route = self._coordinator_apply_tool_mode(
+                state=execution_state,
+                route=route,
+                settings=settings,
+                tool_mode="forced" if (force_tool_followup or followup_has_attachments or attachment_context_incomplete) else "on",
+                reason="backend_route_requires_worker_tools_sync",
+                summary="Router/Coordinator 判定本轮需 Worker 工具链，已同步开启工具绑定。",
+            )
+            router_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "route_requires_worker_tools_sync",
+                    "task_type": route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
         execution_plan[:] = self._build_execution_plan(
             attachment_metas=attachment_metas,
             settings=settings,
@@ -1447,14 +1464,14 @@ class OfficeAgent:
                         route=route,
                         settings=settings,
                         tool_mode="forced",
-                        reason="worker_requested_code_search_backend_escalated",
-                        summary="Worker 已暴露需要代码/文件搜索，后端已强制升级到工具链。",
+                        reason="worker_requested_tools_backend_escalated",
+                        summary="Worker 已暴露需要文件/代码工具，后端已强制升级到工具链。",
                     )
                     add_debug(
                         stage="backend_coordinator",
                         title="Coordinator 切换工具模式",
                         detail=(
-                            "reason=worker_requested_code_search_backend_escalated\n"
+                            "reason=worker_requested_tools_backend_escalated\n"
                             f"tool_mode={execution_state.tool_mode}\n"
                             f"tool_latch={str(execution_state.tool_latch).lower()}\n"
                             f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
@@ -4155,6 +4172,16 @@ class OfficeAgent:
             "need to search the code",
             "need the source file",
             "please provide the source file",
+            "没有可用的文件读取工具",
+            "没有可用文件读取工具",
+            "没有文件读取工具",
+            "当前界面没有显示任何可用的文件读取工具",
+            "当前没有可用的文件读取工具",
+            "无法继续，因为当前界面没有显示任何可用的文件读取工具",
+            "file reading tools are not available",
+            "no file reading tool is available",
+            "no file read tools available",
+            "no file tools available",
         )
         return any(pattern in raw for pattern in patterns)
 
