@@ -458,7 +458,9 @@ function renderRoleBoard(panels = [], activeRoles = new Set(), currentRole = nul
 
     const summaryNode = document.createElement("div");
     summaryNode.className = "role-summary";
-    summaryNode.textContent = String(panel?.summary || meta.blurb || "").trim();
+    const baseSummary = String(meta?.blurb || "").trim();
+    const liveSummary = String(panel?.summary || "").trim();
+    summaryNode.textContent = isPanelDebugEnabled() ? (liveSummary || baseSummary) : (baseSummary || liveSummary);
     card.appendChild(summaryNode);
 
     const phaseText = String(roleState?.phase || "").trim();

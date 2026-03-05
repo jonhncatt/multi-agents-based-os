@@ -550,10 +550,18 @@ body.panel-debug-off .role-card {
   color: #4b6153;
 }
 
-body.panel-debug-off .role-summary,
 body.panel-debug-off .role-phase,
 body.panel-debug-off .role-bullets {
   display: none;
+}
+
+body.panel-debug-off .role-summary {
+  min-height: 28px;
+  max-height: 34px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .role-phase {
