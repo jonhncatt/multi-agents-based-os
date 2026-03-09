@@ -1478,12 +1478,61 @@ class OfficeAgent:
         auto_nudge_budget = min(execution_state.max_attempts, 4 if has_attachments else 2)
         for _ in range(execution_state.max_attempts):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
-            if self._coordinator_tools_enabled(execution_state) and not tool_calls:
-                ai_content_text = self._content_to_text(getattr(ai_msg, "content", ""))
+            ai_content_text = self._content_to_text(getattr(ai_msg, "content", ""))
+            inferred_tool_call = None
+            if not tool_calls:
                 inferred_tool_call = self._infer_bare_tool_call_from_text(
                     ai_content_text,
                     task_type=str(route.get("task_type") or ""),
                 )
+            if (
+                not self._coordinator_tools_enabled(execution_state)
+                and settings.enable_tools
+                and not tool_calls
+                and inferred_tool_call
+                and auto_nudge_budget > 0
+            ):
+                auto_nudge_budget -= 1
+                route = self._coordinator_apply_tool_mode(
+                    state=execution_state,
+                    route=route,
+                    settings=settings,
+                    tool_mode="forced",
+                    reason="worker_bare_json_tool_args_backend_escalated",
+                    summary="Worker 输出了工具参数 JSON，Coordinator 已升级为工具链并直接执行。",
+                )
+                request_requires_tools = True
+                execution_plan[:] = self._build_execution_plan(
+                    attachment_metas=attachment_metas,
+                    settings=settings,
+                    route=route,
+                )
+                add_panel(
+                    "router",
+                    "Router",
+                    str(route.get("summary") or "已完成链路分诊。").strip() or "已完成链路分诊。",
+                    self._format_router_panel_bullets(route),
+                )
+                add_panel(
+                    "coordinator",
+                    "Coordinator",
+                    self._coordinator_summary(execution_state),
+                    self._coordinator_panel_bullets(execution_state),
+                )
+                tool_calls = [inferred_tool_call]
+                add_trace(
+                    f"检测到 Worker 输出了裸工具参数 JSON，Coordinator 已开启工具链并自动执行 {inferred_tool_call['name']}。"
+                )
+                add_debug(
+                    stage="backend_warning",
+                    title="自动纠偏：裸 JSON 参数触发工具链升级",
+                    detail=(
+                        "Worker 输出了工具参数样式 JSON，但当时未处于工具链模式。"
+                        f"后端已升级并改写为 {inferred_tool_call['name']} 调用，args="
+                        f"{self._shorten(json.dumps(inferred_tool_call.get('args') or {}, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
+                    ),
+                )
+            if self._coordinator_tools_enabled(execution_state) and not tool_calls:
                 if inferred_tool_call:
                     tool_calls = [inferred_tool_call]
                     add_trace(
@@ -1538,7 +1587,7 @@ class OfficeAgent:
                     and settings.enable_tools
                     and auto_nudge_budget > 0
                     and self._request_likely_requires_tools(planner_user_message, attachment_metas)
-                    and self._looks_like_tool_escalation_needed(self._content_to_text(getattr(ai_msg, "content", "")))
+                    and self._looks_like_tool_escalation_needed(ai_content_text)
                 ):
                     auto_nudge_budget -= 1
                     route = self._coordinator_apply_tool_mode(
@@ -3299,7 +3348,7 @@ class OfficeAgent:
             if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
             if (inferred_bare_tool or bare_tool_like_json) and self._request_likely_requires_tools(user_message, attachment_metas):
-                return "我已经开始按当前路径和目标继续搜索，不需要你额外确认目录权限或工具格式。"
+                return "我上一条误输出了工具参数而不是最终结果。请直接重试同一句，我会继续检索并返回结论。"
             if had_unverified_fulltext_claim:
                 return "这轮我还没有执行完整关键词检索，不能直接声称已做全文搜索。若你要定位出处，我会先检索并给出页码/片段。"
             return original
@@ -5642,13 +5691,30 @@ class OfficeAgent:
             parsed[key] = value
         return parsed or None
 
+    def _extract_standalone_object_payload(self, raw_text: str) -> str:
+        text = str(raw_text or "").strip()
+        if not text:
+            return ""
+        if text.startswith("```"):
+            match = re.match(r"^```(?:json|javascript|js)?\s*([\s\S]*?)\s*```$", text, re.IGNORECASE)
+            if match:
+                text = str(match.group(1) or "").strip()
+        if text.lower().startswith("json"):
+            text = re.sub(r"^json\s*", "", text, flags=re.IGNORECASE).strip()
+        if text.startswith("{") and text.endswith("}"):
+            return text
+        return ""
+
     def _infer_bare_tool_call_from_text(
         self,
         text: str,
         *,
         task_type: str = "",
     ) -> dict[str, Any] | None:
-        parsed = self._parse_json_object(text) or self._parse_loose_object_literal(text)
+        payload = self._extract_standalone_object_payload(text)
+        if not payload:
+            return None
+        parsed = self._parse_json_object(payload) or self._parse_loose_object_literal(payload)
         if not isinstance(parsed, dict) or not parsed:
             return None
 
@@ -5739,7 +5805,10 @@ class OfficeAgent:
         return None
 
     def _looks_like_bare_tool_arguments_text(self, text: str) -> bool:
-        parsed = self._parse_json_object(text) or self._parse_loose_object_literal(text)
+        payload = self._extract_standalone_object_payload(text)
+        if not payload:
+            return False
+        parsed = self._parse_json_object(payload) or self._parse_loose_object_literal(payload)
         if not isinstance(parsed, dict) or not parsed:
             return False
         keys = {str(key).strip().lower() for key in parsed.keys() if str(key).strip()}
