@@ -921,11 +921,125 @@ function renderMarkdownLite(text) {
     return token;
   });
 
-  let html = escapeHtml(withCodeTokens);
-  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-  html = html.replace(/\n/g, "<br>");
+  const renderInlineMarkdownLite = (raw) => {
+    let html = escapeHtml(String(raw ?? ""));
+    html = html.replace(
+      /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+    html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+    return html;
+  };
+
+  const lines = withCodeTokens.replace(/\r\n/g, "\n").split("\n");
+  const chunks = [];
+  let i = 0;
+  const codeTokenSet = new Set(codeBlocks.map((item) => item.token));
+  const isCodeTokenLine = (line) => codeTokenSet.has(String(line || "").trim());
+  const parseTableRow = (line) => {
+    const raw = String(line || "").trim().replace(/^\|/, "").replace(/\|$/, "");
+    return raw.split("|").map((cell) => cell.trim());
+  };
+  const isTableSeparator = (line) =>
+    /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || ""));
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = String(line || "").trim();
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+
+    if (isCodeTokenLine(trimmed)) {
+      chunks.push(trimmed);
+      i += 1;
+      continue;
+    }
+
+    if (trimmed.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const headerCells = parseTableRow(lines[i]);
+      i += 2;
+      const bodyRows = [];
+      while (i < lines.length) {
+        const rowLine = String(lines[i] || "").trim();
+        if (!rowLine || !rowLine.includes("|") || isCodeTokenLine(rowLine)) break;
+        bodyRows.push(parseTableRow(rowLine));
+        i += 1;
+      }
+      const thead = `<thead><tr>${headerCells
+        .map((cell) => `<th>${renderInlineMarkdownLite(cell)}</th>`)
+        .join("")}</tr></thead>`;
+      const tbody = bodyRows.length
+        ? `<tbody>${bodyRows
+            .map((row) => {
+              const normalized = row.slice(0, headerCells.length);
+              while (normalized.length < headerCells.length) normalized.push("");
+              return `<tr>${normalized
+                .map((cell) => `<td>${renderInlineMarkdownLite(cell)}</td>`)
+                .join("")}</tr>`;
+            })
+            .join("")}</tbody>`
+        : "";
+      chunks.push(`<table>${thead}${tbody}</table>`);
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (orderedMatch) {
+      const items = [];
+      while (i < lines.length) {
+        const row = String(lines[i] || "").trim();
+        const matched = row.match(/^\d+\.\s+(.+)$/);
+        if (!matched) break;
+        items.push(matched[1]);
+        i += 1;
+      }
+      chunks.push(`<ol>${items.map((item) => `<li>${renderInlineMarkdownLite(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    const unorderedMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (unorderedMatch) {
+      const items = [];
+      while (i < lines.length) {
+        const row = String(lines[i] || "").trim();
+        const matched = row.match(/^[-*+]\s+(.+)$/);
+        if (!matched) break;
+        items.push(matched[1]);
+        i += 1;
+      }
+      chunks.push(`<ul>${items.map((item) => `<li>${renderInlineMarkdownLite(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    const paraLines = [];
+    while (i < lines.length) {
+      const row = String(lines[i] || "");
+      const rowTrimmed = row.trim();
+      if (!rowTrimmed) break;
+      if (isCodeTokenLine(rowTrimmed)) break;
+      if (rowTrimmed.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) break;
+      if (/^\d+\.\s+/.test(rowTrimmed)) break;
+      if (/^[-*+]\s+/.test(rowTrimmed)) break;
+      paraLines.push(rowTrimmed);
+      i += 1;
+    }
+    if (paraLines.length) {
+      const paraHtml = renderInlineMarkdownLite(paraLines.join("\n")).replace(/\n/g, "<br>");
+      chunks.push(`<p>${paraHtml}</p>`);
+      continue;
+    }
+
+    i += 1;
+  }
+
+  let html = chunks.join("");
+  if (!html) {
+    html = renderInlineMarkdownLite(withCodeTokens).replace(/\n/g, "<br>");
+  }
 
   codeBlocks.forEach((item) => {
     html = html.replace(item.token, item.html);

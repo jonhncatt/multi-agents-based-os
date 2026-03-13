@@ -796,6 +796,31 @@ body.panel-debug-off .role-summary {
   padding: 0;
 }
 
+.bubble.assistant table {
+  margin: 8px 0 10px;
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid #d8dfd5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.bubble.assistant th,
+.bubble.assistant td {
+  border: 1px solid #d8dfd5;
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.bubble.assistant th {
+  background: #f4f8f2;
+  font-weight: 600;
+}
+
 .bubble.assistant pre {
   margin: 8px 0;
   padding: 10px;
