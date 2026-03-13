@@ -48,6 +48,7 @@ _NEWS_HINTS = (
 
 _ATTACHMENT_INLINE_MAX_BYTES = 1 * 1024 * 1024
 _ATTACHMENT_INLINE_MAX_CHARS_SOFT = 80000
+_ATTACHMENT_INLINE_IMAGE_MAX_BYTES = 12 * 1024 * 1024
 _FOLLOWUP_INLINE_MAX_BYTES = 256 * 1024
 _FOLLOWUP_SEARCH_HINTS = (
     "上网查",
@@ -180,6 +181,19 @@ _UNDERSTANDING_HINTS = (
     "分析",
     "梳理",
     "翻译",
+    "转录",
+    "抄录",
+    "识别",
+    "ocr",
+    "原文",
+    "可见文字",
+    "图里",
+    "图片里",
+    "截图里",
+    "看到了什么",
+    "看到什么",
+    "写了什么",
+    "内容是什么",
     "摘要",
     "看懂",
     "说说",
@@ -949,6 +963,19 @@ class OfficeAgent:
             history_turn_count=len(history_turns),
         )
         messages.append(self._HumanMessage(content=user_content))
+        has_image_attachments = self._has_image_attachments(attachment_metas)
+        image_text_extraction_request = has_image_attachments and self._looks_like_image_text_extraction_request(user_message)
+        if image_text_extraction_request:
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "用户本轮要求提取图片中的可见原文。"
+                        "请直接给出可见文本正文，不要只给标题。"
+                        "按画面顺序逐行转录；看不清的片段请标注为[不清晰]，不要凭空补写。"
+                    )
+                )
+            )
+            add_trace("检测到图片原文提取请求，已要求 Worker 输出完整可见文本，不只返回标题。")
         tool_events: list[ToolEvent] = []
         add_debug(
             stage="backend_ingress",
@@ -1989,6 +2016,81 @@ class OfficeAgent:
                     except Exception as exc:
                         add_trace(f"证据补强后推理失败: {exc}")
                         add_debug(stage="llm_error", title="Worker 证据补强失败", detail=str(exc))
+                        break
+                if (
+                    has_image_attachments
+                    and auto_nudge_budget > 0
+                    and self._looks_like_image_capability_denial(ai_content_text)
+                ):
+                    auto_nudge_budget -= 1
+                    add_trace("检测到模型误报“无法看图/OCR”，Coordinator 已追加纠偏并重试。")
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：图片能力误报",
+                        detail=(
+                            "模型在已注入 image_url 的前提下仍声称无法读取图片；"
+                            "后端已追加提示并要求基于图片可见内容重新作答。"
+                        ),
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "你已经收到本轮图片输入（image_url）。"
+                                "不要再说无法看图、无法 OCR、无法提取图片文字。"
+                                "请直接基于图片可见内容作答；看不清的部分明确标注[不清晰]。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
+                            title="Worker -> Coordinator（纠正图片能力误报后响应）",
+                            model=effective_model,
+                            current_runner=runner,
+                        )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        continue
+                    except Exception as exc:
+                        add_trace(f"纠正图片能力误报后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 图片能力纠偏失败", detail=str(exc))
+                        break
+                if (
+                    has_image_attachments
+                    and image_text_extraction_request
+                    and auto_nudge_budget > 0
+                    and self._looks_like_stub_image_transcription(ai_content_text)
+                ):
+                    auto_nudge_budget -= 1
+                    add_trace("检测到图片原文提取回复过短，Coordinator 已要求补全可见文本并重试。")
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：图片转录内容过短",
+                        detail=(
+                            "当前回复像是“标题占位”而非完整转录；"
+                            "后端已要求按画面顺序补全可见文本正文。"
+                        ),
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "你当前回复只给了标题或极短占位，未给出实际转录内容。"
+                                "请重新输出图片中可见原文，按画面顺序逐行列出。"
+                                "不要只给“以下为原文”这类开头句。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
+                            title="Worker -> Coordinator（补全图片转录后响应）",
+                            model=effective_model,
+                            current_runner=runner,
+                        )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        continue
+                    except Exception as exc:
+                        add_trace(f"补全图片转录后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 图片转录补全失败", detail=str(exc))
                         break
                 if (
                     auto_nudge_budget > 0
@@ -6573,6 +6675,88 @@ class OfficeAgent:
             or re.search(r"(?:where).{0,18}(?:see|mention|found)", text)
         )
 
+    def _has_image_attachments(self, attachment_metas: list[dict[str, Any]]) -> bool:
+        return any(str(meta.get("kind") or "").strip().lower() == "image" for meta in attachment_metas)
+
+    def _looks_like_image_text_extraction_request(self, user_message: str) -> bool:
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        hints = (
+            "原文",
+            "可见文字",
+            "完整转录",
+            "转录",
+            "抄录",
+            "逐字",
+            "逐行",
+            "ocr",
+            "图片中可见",
+            "截图中可见",
+            "text in image",
+            "transcribe",
+            "verbatim",
+        )
+        if any(hint in text for hint in hints):
+            return True
+        return bool(re.search(r"(?:图片|截图|图里|图片里|截图里).{0,8}(?:写了什么|写的什么|写了啥|是什么)", text))
+
+    def _looks_like_image_capability_denial(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "无法直接对图像执行ocr",
+            "无法对图像执行ocr",
+            "无法执行ocr",
+            "目前无法直接对图像",
+            "无法读取图片",
+            "不能读取图片",
+            "无法识别图片",
+            "无法查看图片",
+            "我目前无法直接",
+            "can't directly perform ocr",
+            "cannot directly perform ocr",
+            "cannot perform ocr",
+            "can't perform ocr",
+            "cannot read the image",
+            "can't read the image",
+            "cannot view images",
+            "can't view images",
+            "unable to process image",
+        )
+        return any(pattern in lowered for pattern in patterns)
+
+    def _looks_like_stub_image_transcription(self, text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        if len(raw) > 260:
+            return False
+        lowered = raw.lower()
+        intro_markers = (
+            "以下为图片中可见",
+            "以下是图片中可见",
+            "以下为截图中可见",
+            "以下是截图中可见",
+            "按画面顺序",
+            "完整转录",
+            "无推测",
+            "transcription",
+            "verbatim",
+        )
+        if not any(marker in lowered for marker in intro_markers):
+            return False
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if len(lines) <= 1:
+            return True
+        body = " ".join(lines[1:]).strip()
+        if not body:
+            return True
+        if re.search(r"[：:]\s*$", lines[0]) and len(body) < 20:
+            return True
+        return len(body) < 12
+
     def _looks_like_meeting_minutes_request(self, user_message: str) -> bool:
         text = (user_message or "").strip().lower()
         if not text:
@@ -6703,6 +6887,8 @@ class OfficeAgent:
             size = int(meta.get("size") or 0)
         except Exception:
             size = 0
+        if kind == "image":
+            return size <= _ATTACHMENT_INLINE_IMAGE_MAX_BYTES
         if kind != "document":
             return False
         if self._attachment_needs_tooling(meta):

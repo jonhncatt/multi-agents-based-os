@@ -894,7 +894,17 @@ function renderAssistantMarkdown(text) {
         gfm: true,
         breaks: true,
       });
-      return purifyApi.sanitize(html, { USE_PROFILES: { html: true } });
+      const sanitized = purifyApi.sanitize(html, { USE_PROFILES: { html: true } });
+      const sourceCompactLen = source.replace(/\s+/g, "").length;
+      if (sourceCompactLen >= 24) {
+        const probe = document.createElement("div");
+        probe.innerHTML = sanitized;
+        const renderedCompactLen = String(probe.textContent || "").replace(/\s+/g, "").length;
+        if (!renderedCompactLen || renderedCompactLen < Math.max(8, Math.floor(sourceCompactLen * 0.45))) {
+          return renderMarkdownLite(source);
+        }
+      }
+      return sanitized;
     } catch {}
   }
 

@@ -1265,6 +1265,64 @@
     }
   },
   {
+    "name": "helper_route_rules_image_understanding_prefers_direct_understanding",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "你从图片里看到了什么？",
+      "attachment_metas": [
+        {
+          "kind": "image",
+          "suffix": ".png",
+          "size": 245760,
+          "mime": "image/png",
+          "original_name": "clipboard.png",
+          "path": "/tmp/clipboard.png"
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true
+      },
+      "inline_followup_context": false
+    },
+    "assert": {
+      "equals": {
+        "task_type": "simple_understanding",
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false
+      }
+    }
+  },
+  {
+    "name": "helper_image_capability_denial_detected",
+    "kind": "helper",
+    "helper": "_looks_like_image_capability_denial",
+    "args": {
+      "text": "抱歉，我目前无法直接对图像执行OCR，也无法提取图片中的文字。"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_stub_image_transcription_detected",
+    "kind": "helper",
+    "helper": "_looks_like_stub_image_transcription",
+    "args": {
+      "text": "以下为图片中可见的日语原文(按画面顺序完整转录，无推测)："
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

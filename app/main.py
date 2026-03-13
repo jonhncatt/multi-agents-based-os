@@ -68,6 +68,9 @@ _ATTACHMENT_CONTEXT_CLEAR_HINTS = (
 )
 _ATTACHMENT_CONTEXT_FILE_HINTS = (
     "附件",
+    "图片",
+    "截图",
+    "照片",
     "文档",
     "pdf",
     "docx",
@@ -80,6 +83,12 @@ _ATTACHMENT_CONTEXT_FILE_HINTS = (
     "上个文档",
     "上个文件",
     "上一个附件",
+    "上一个截图",
+    "上一个图片",
+    "this image",
+    "this screenshot",
+    "image",
+    "screenshot",
 )
 _ATTACHMENT_CONTEXT_REFERENCE_HINTS = (
     "这个",
@@ -99,16 +108,30 @@ _ATTACHMENT_CONTEXT_ACTION_HINTS = (
     "继续",
     "接着",
     "解析",
+    "识别",
+    "ocr",
+    "转录",
+    "抄录",
     "总结",
     "概括",
     "解读",
     "翻译",
     "提取",
+    "原文",
+    "文中",
+    "出现",
+    "用法",
+    "语法",
+    "什么意思",
     "查找",
+    "看到",
+    "看到了",
     "看一下",
     "继续看",
     "继续读",
     "continue",
+    "transcribe",
+    "extract text",
     "summarize",
     "analyze",
     "extract",
@@ -189,6 +212,11 @@ def _message_requests_attachment_context(message: str) -> bool:
     has_ref = any(hint in text for hint in _ATTACHMENT_CONTEXT_REFERENCE_HINTS)
     has_action = any(hint in text for hint in _ATTACHMENT_CONTEXT_ACTION_HINTS)
     if has_ref and has_action:
+        return True
+    if len(raw) <= 40 and (
+        any(token in text for token in ("什么意思", "怎么用", "用法", "语法", "在文中", "有没有出现", "是否出现"))
+        or bool(re.search(r"[\"'“”‘’「『].{1,24}[\"'“”‘’」』]", raw))
+    ):
         return True
     if len(raw) <= 12 and any(token in text for token in ("继续", "接着", "然后呢", "继续吧", "接着说")):
         return True
