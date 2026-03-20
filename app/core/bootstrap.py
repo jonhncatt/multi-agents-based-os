@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
+from typing import Any
 from uuid import uuid4
 
 from app.config import AppConfig
@@ -93,14 +94,19 @@ class KernelRuntime:
     def _last_shadow_run_path(self) -> Path:
         return self.context.runtime_dir / "last_shadow_run.json"
 
+    def _upgrade_runs_dir(self) -> Path:
+        return self.context.runtime_dir / "upgrade_runs"
+
+    def _last_upgrade_run_path(self) -> Path:
+        return self.context.runtime_dir / "last_upgrade_run.json"
+
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(path)
 
-    def read_last_shadow_run(self) -> dict[str, object]:
-        path = self._last_shadow_run_path()
+    def _read_json_dict(self, path: Path) -> dict[str, object]:
         if not path.is_file():
             return {}
         try:
@@ -108,6 +114,163 @@ class KernelRuntime:
         except Exception:
             return {}
         return raw if isinstance(raw, dict) else {}
+
+    def read_last_shadow_run(self) -> dict[str, object]:
+        return self._read_json_dict(self._last_shadow_run_path())
+
+    def read_last_upgrade_run(self) -> dict[str, object]:
+        return self._read_json_dict(self._last_upgrade_run_path())
+
+    def list_upgrade_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
+        max_items = max(1, min(200, int(limit)))
+        files = sorted(self._upgrade_runs_dir().glob("*.json"), key=lambda path: path.name, reverse=True)
+        out: list[dict[str, object]] = []
+        for path in files:
+            payload = self._read_json_dict(path)
+            if payload:
+                out.append(payload)
+            if len(out) >= max_items:
+                break
+        return out
+
+    def _pipeline_run_id(self) -> str:
+        return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
+
+    def _pipeline_failure_text(self, payload: dict[str, object] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("error", "reason"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            parts = [str(item).strip() for item in errors if str(item).strip()]
+            if parts:
+                return "; ".join(parts[:3])
+        validation = payload.get("validation")
+        if isinstance(validation, dict):
+            errors = validation.get("errors")
+            if isinstance(errors, list):
+                parts = [str(item).strip() for item in errors if str(item).strip()]
+                if parts:
+                    return "; ".join(parts[:3])
+        return ""
+
+    def _pipeline_manifest_labels(self, validation: dict[str, object] | None) -> list[str]:
+        if not isinstance(validation, dict):
+            return []
+        errors = validation.get("errors")
+        if not isinstance(errors, list):
+            return []
+        labels: list[str] = []
+        for item in errors:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            label = text.split(":", 1)[0].strip()
+            if label and label not in labels:
+                labels.append(label)
+        return labels
+
+    def _classify_pipeline_failure(
+        self,
+        *,
+        stage: dict[str, object],
+        validation: dict[str, object],
+        smoke: dict[str, object],
+        replay: dict[str, object],
+        promotion: dict[str, object],
+    ) -> dict[str, object]:
+        if not bool(validation.get("ok")):
+            return {
+                "ok": False,
+                "category": "manifest_validation",
+                "failed_stage": "validation",
+                "reason": self._pipeline_failure_text(validation) or "manifest_validation_failed",
+                "retryable": True,
+                "blocking_modules": self._pipeline_manifest_labels(validation),
+            }
+        if not bool(stage.get("ok")):
+            return {
+                "ok": False,
+                "category": "stage_failed",
+                "failed_stage": "stage",
+                "reason": self._pipeline_failure_text(stage) or "stage_failed",
+                "retryable": True,
+                "blocking_modules": self._pipeline_manifest_labels(validation),
+            }
+        if smoke and not bool(smoke.get("ok")):
+            return {
+                "ok": False,
+                "category": "shadow_smoke",
+                "failed_stage": "smoke",
+                "reason": self._pipeline_failure_text(smoke) or "shadow_smoke_failed",
+                "retryable": True,
+                "blocking_modules": [],
+            }
+        if replay and not bool(replay.get("ok")):
+            return {
+                "ok": False,
+                "category": "shadow_replay",
+                "failed_stage": "replay",
+                "reason": self._pipeline_failure_text(replay) or "shadow_replay_failed",
+                "retryable": True,
+                "blocking_modules": [],
+            }
+        if promotion and not bool(promotion.get("ok")):
+            return {
+                "ok": False,
+                "category": "promotion_failed",
+                "failed_stage": "promotion",
+                "reason": self._pipeline_failure_text(promotion) or "shadow_promotion_failed",
+                "retryable": False,
+                "blocking_modules": [],
+            }
+        return {
+            "ok": True,
+            "category": "none",
+            "failed_stage": "",
+            "reason": "",
+            "retryable": False,
+            "blocking_modules": [],
+        }
+
+    def _remediation_hints(
+        self,
+        *,
+        classification: dict[str, object],
+        validation: dict[str, object],
+        smoke: dict[str, object],
+        replay: dict[str, object],
+        promote_if_healthy: bool,
+    ) -> list[str]:
+        category = str(classification.get("category") or "")
+        blocking_modules = [str(item).strip() for item in classification.get("blocking_modules") or [] if str(item).strip()]
+        hints: list[str] = []
+        if category == "manifest_validation":
+            if blocking_modules:
+                hints.append(f"先修 shadow manifest 里这些模块引用: {', '.join(blocking_modules)}。")
+            hints.append("优先查看 validation.errors，确认模块版本目录、manifest entrypoint 和接口方法是否齐全。")
+            hints.append("manifest 未通过前不要 promote，保持 active manifest 不动。")
+        elif category == "shadow_smoke":
+            provider = smoke.get("provider")
+            if isinstance(provider, dict) and provider.get("ok") is False and not provider.get("skipped"):
+                hints.append("先修 provider 路径；当前 shadow smoke 已在最小请求上失败。")
+            hints.append("查看 smoke.error、selected_modules 和 module_health，确认是模块逻辑错误还是 provider 初始化失败。")
+            hints.append("修完后先重新跑 shadow smoke，再决定是否进入 replay。")
+        elif category == "shadow_replay":
+            hints.append("优先比对 replay.source_run_id 对应的 shadow log 和 replay.execution_trace，确认回放输入是否完整。")
+            hints.append("如果 smoke 通过但 replay 失败，问题通常在多轮状态、附件上下文或最终整理链。")
+        elif category == "promotion_failed":
+            hints.append("先确认 validation/smoke/replay 全部为 ok，再检查 promote 的 rollback_pointer 和 active manifest 写入权限。")
+        elif category == "stage_failed":
+            hints.append("先确认 shadow manifest override 是否写入了有效模块引用。")
+        elif category == "none" and promote_if_healthy:
+            hints.append("当前 shadow pipeline 已通过；如果后续要切换 live，可直接 promote。")
+        if category != "none":
+            hints.append("修完后重新跑 /api/kernel/shadow/pipeline，让内核产出新的 upgrade attempt。")
+        return hints
 
     def run_shadow_smoke(
         self,
@@ -319,6 +482,84 @@ class KernelRuntime:
 
         self._write_json(run_dir / "replay_result.json", payload)
         self._write_json(self._last_shadow_run_path(), payload)
+        return payload
+
+    def run_shadow_pipeline(
+        self,
+        *,
+        overrides: dict[str, object] | None = None,
+        smoke_message: str = "给我今天的新闻",
+        validate_provider: bool = True,
+        replay_record: dict[str, object] | None = None,
+        promote_if_healthy: bool = False,
+    ) -> dict[str, object]:
+        run_id = self._pipeline_run_id()
+        started_at = datetime.now(timezone.utc).isoformat()
+        stage = self.stage_shadow_manifest(overrides=overrides or {})
+        validation = stage.get("validation") if isinstance(stage.get("validation"), dict) else self.validate_shadow_manifest()
+        smoke: dict[str, object] = {}
+        replay: dict[str, object] = {}
+        promotion: dict[str, object] = {}
+
+        if bool(validation.get("ok")):
+            smoke = self.run_shadow_smoke(
+                user_message=smoke_message,
+                validate_provider=bool(validate_provider),
+            )
+            if isinstance(replay_record, dict) and replay_record:
+                replay = self.run_shadow_replay(replay_record=replay_record)
+            if req_ready := (
+                bool(promote_if_healthy)
+                and bool(smoke.get("ok"))
+                and (not replay or bool(replay.get("ok")))
+            ):
+                promotion = self.promote_shadow_manifest()
+            else:
+                req_ready = False
+        else:
+            req_ready = False
+
+        overall_ok = bool(stage.get("ok")) and bool(validation.get("ok"))
+        if smoke:
+            overall_ok = overall_ok and bool(smoke.get("ok"))
+        if replay:
+            overall_ok = overall_ok and bool(replay.get("ok"))
+        if promotion:
+            overall_ok = overall_ok and bool(promotion.get("ok"))
+
+        classification = self._classify_pipeline_failure(
+            stage=stage,
+            validation=validation,
+            smoke=smoke,
+            replay=replay,
+            promotion=promotion,
+        )
+        remediation_hints = self._remediation_hints(
+            classification=classification,
+            validation=validation,
+            smoke=smoke,
+            replay=replay,
+            promote_if_healthy=bool(promote_if_healthy),
+        )
+        payload: dict[str, object] = {
+            "ok": overall_ok,
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "target_overrides": dict(overrides or {}),
+            "replay_source_run_id": str(replay_record.get("run_id") or "") if isinstance(replay_record, dict) else "",
+            "promote_if_healthy": bool(promote_if_healthy),
+            "promotion_attempted": bool(req_ready),
+            "stage": stage,
+            "validation": validation,
+            "smoke": smoke,
+            "replay": replay,
+            "promotion": promotion,
+            "failure_classification": classification,
+            "remediation_hints": remediation_hints,
+        }
+        self._write_json(self._upgrade_runs_dir() / f"{run_id}.json", payload)
+        self._write_json(self._last_upgrade_run_path(), payload)
         return payload
 
 

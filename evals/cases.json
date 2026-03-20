@@ -2256,14 +2256,53 @@
         "smoke.ok": true,
         "replay.ok": true,
         "promotion.ok": true,
-        "rollback.ok": true
+        "rollback.ok": true,
+        "pipeline.ok": true,
+        "pipeline.failure_classification.category": "none"
       },
       "contains": {
+        "pipeline.run_id": [
+          "-"
+        ],
         "promotion.active_manifest.router": [
           "router_rules@2.0.0"
         ],
         "rollback.active_manifest.router": [
           "router_rules@1.0.0"
+        ],
+        "pipeline.remediation_hints.0": [
+          "promote"
+        ],
+        "last_upgrade_run.run_id": [
+          "-"
+        ],
+        "upgrade_runs.0.run_id": [
+          "-"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_pipeline_classifies_broken_manifest",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_pipeline_classifies_broken_manifest",
+    "args": {},
+    "assert": {
+      "equals": {
+        "pipeline.ok": false,
+        "pipeline.failure_classification.category": "manifest_validation",
+        "pipeline.failure_classification.failed_stage": "validation",
+        "last_upgrade_run.failure_classification.category": "manifest_validation"
+      },
+      "contains": {
+        "pipeline.failure_classification.reason": [
+          "router"
+        ],
+        "pipeline.remediation_hints.0": [
+          "shadow manifest"
+        ],
+        "upgrade_runs.0.run_id": [
+          "-"
         ]
       }
     }

@@ -242,6 +242,7 @@ def health() -> HealthResponse:
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
         kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
+        kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -272,6 +273,7 @@ def _kernel_runtime_response(
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
         kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
+        kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -294,6 +296,28 @@ def kernel_runtime_state() -> KernelRuntimeResponse:
         ok=True,
         detail="内核运行时状态。",
         validation=runtime.validate_shadow_manifest(),
+    )
+
+
+@app.get("/api/kernel/upgrades", response_model=KernelRuntimeResponse)
+def kernel_upgrade_history(limit: int = 10) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    runs = runtime.list_upgrade_runs(limit=limit)
+    summary = [
+        {
+            "run_id": str(item.get("run_id") or ""),
+            "ok": bool(item.get("ok")),
+            "started_at": str(item.get("started_at") or ""),
+            "finished_at": str(item.get("finished_at") or ""),
+            "failed_stage": str(((item.get("failure_classification") or {}) if isinstance(item.get("failure_classification"), dict) else {}).get("failed_stage") or ""),
+            "category": str(((item.get("failure_classification") or {}) if isinstance(item.get("failure_classification"), dict) else {}).get("category") or ""),
+        }
+        for item in runs
+    ]
+    return _kernel_runtime_response(
+        ok=True,
+        detail="最近 upgrade attempts。",
+        pipeline={"upgrade_runs": summary},
     )
 
 
@@ -401,41 +425,20 @@ def kernel_shadow_pipeline(req: KernelShadowPipelineRequest) -> KernelRuntimeRes
         exclude_none=True,
         include={"router", "policy", "attachment_context", "finalizer", "tool_registry", "providers"},
     )
-    stage = runtime.stage_shadow_manifest(overrides=overrides)
-    validation = stage.get("validation") if isinstance(stage.get("validation"), dict) else runtime.validate_shadow_manifest()
-    smoke: dict[str, object] = {}
-    replay: dict[str, object] = {}
-    promotion: dict[str, object] = {}
-
-    if bool(validation.get("ok")):
-        smoke = runtime.run_shadow_smoke(
-            user_message=req.smoke_message,
-            validate_provider=bool(req.validate_provider),
-        )
-        if req.replay_run_id or shadow_log_store.list_recent(limit=1):
-            record = _find_shadow_replay_record(req.replay_run_id)
-            if isinstance(record, dict):
-                replay = runtime.run_shadow_replay(replay_record=record)
-        if req.promote_if_healthy and bool(smoke.get("ok")) and (not replay or bool(replay.get("ok"))):
-            promotion = runtime.promote_shadow_manifest()
-
-    pipeline = {
-        "stage": stage,
-        "validation": validation,
-        "smoke": smoke,
-        "replay": replay,
-        "promotion": promotion,
-    }
-    overall_ok = bool(stage.get("ok")) and bool(validation.get("ok"))
-    if smoke:
-        overall_ok = overall_ok and bool(smoke.get("ok"))
-    if replay:
-        overall_ok = overall_ok and bool(replay.get("ok"))
-    if promotion:
-        overall_ok = overall_ok and bool(promotion.get("ok"))
+    replay_record = _find_shadow_replay_record(req.replay_run_id) if (req.replay_run_id or shadow_log_store.list_recent(limit=1)) else None
+    pipeline = runtime.run_shadow_pipeline(
+        overrides=overrides,
+        smoke_message=req.smoke_message,
+        validate_provider=bool(req.validate_provider),
+        replay_record=replay_record if isinstance(replay_record, dict) else None,
+        promote_if_healthy=bool(req.promote_if_healthy),
+    )
+    validation = pipeline.get("validation") if isinstance(pipeline.get("validation"), dict) else {}
+    smoke = pipeline.get("smoke") if isinstance(pipeline.get("smoke"), dict) else {}
+    replay = pipeline.get("replay") if isinstance(pipeline.get("replay"), dict) else {}
 
     return _kernel_runtime_response(
-        ok=overall_ok,
+        ok=bool(pipeline.get("ok")),
         detail="shadow pipeline 已执行。",
         validation=validation,
         smoke=smoke,

@@ -735,10 +735,10 @@ class OfficeAgent:
                 module_health_path=runtime_dir / "module_health.json",
             )
             runtime = build_kernel_runtime(cfg)
-            stage = runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
-            validation = runtime.validate_shadow_manifest()
-            smoke = runtime.run_shadow_smoke(user_message="给我今天的新闻", validate_provider=False)
-            replay = runtime.run_shadow_replay(
+            pipeline = runtime.run_shadow_pipeline(
+                overrides={"router": str(target_router_ref)},
+                smoke_message="给我今天的新闻",
+                validate_provider=False,
                 replay_record={
                     "run_id": "synthetic-pipeline",
                     "session_id": "synthetic-session",
@@ -748,17 +748,50 @@ class OfficeAgent:
                     "history_turns_before": [],
                     "attachment_metas": [],
                     "route_state_input": {},
-                }
+                },
+                promote_if_healthy=True,
             )
-            promotion = runtime.promote_shadow_manifest()
             rollback = runtime.rollback_active_manifest()
+            last_upgrade_run = runtime.read_last_upgrade_run()
+            upgrade_runs = runtime.list_upgrade_runs(limit=5)
             return {
-                "stage": stage,
-                "validation": validation,
-                "smoke": smoke,
-                "replay": replay,
-                "promotion": promotion,
+                "pipeline": pipeline,
+                "stage": dict(pipeline.get("stage") or {}),
+                "validation": dict(pipeline.get("validation") or {}),
+                "smoke": dict(pipeline.get("smoke") or {}),
+                "replay": dict(pipeline.get("replay") or {}),
+                "promotion": dict(pipeline.get("promotion") or {}),
                 "rollback": rollback,
+                "last_upgrade_run": last_upgrade_run,
+                "upgrade_runs": upgrade_runs,
+            }
+
+    def _debug_kernel_shadow_pipeline_classifies_broken_manifest(
+        self,
+        broken_router_ref: str = "router_rules@999.0.0",
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-bad-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            pipeline = runtime.run_shadow_pipeline(
+                overrides={"router": str(broken_router_ref)},
+                smoke_message="给我今天的新闻",
+                validate_provider=False,
+                replay_record=None,
+                promote_if_healthy=False,
+            )
+            return {
+                "pipeline": pipeline,
+                "last_upgrade_run": runtime.read_last_upgrade_run(),
+                "upgrade_runs": runtime.list_upgrade_runs(limit=5),
             }
 
     def _module_registry(self):
