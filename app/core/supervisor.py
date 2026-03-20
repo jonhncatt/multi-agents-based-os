@@ -23,6 +23,7 @@ class KernelSupervisor:
         self._config.runtime_dir.mkdir(parents=True, exist_ok=True)
         (self._config.runtime_dir / "upgrade_runs").mkdir(parents=True, exist_ok=True)
         (self._config.runtime_dir / "repair_runs").mkdir(parents=True, exist_ok=True)
+        (self._config.runtime_dir / "patch_worker_runs").mkdir(parents=True, exist_ok=True)
         (self._config.runtime_dir / "shadow_runs").mkdir(parents=True, exist_ok=True)
         if not self._config.active_manifest_path.is_file():
             write_active_manifest(self._config.active_manifest_path, active_manifest_from_dict(DEFAULT_ACTIVE_MANIFEST))
@@ -379,5 +380,6 @@ class KernelSupervisor:
                 "upgrade_runs_dir": str(self._config.runtime_dir / "upgrade_runs"),
                 "repair_runs_dir": str(self._config.runtime_dir / "repair_runs"),
                 "repair_workspaces_dir": str(self._config.runtime_dir / "repair_workspaces"),
+                "patch_worker_runs_dir": str(self._config.runtime_dir / "patch_worker_runs"),
             },
         )

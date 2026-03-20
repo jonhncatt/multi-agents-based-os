@@ -18,6 +18,25 @@ class ModuleLoader:
         cached = self._ref_cache.get(ref)
         if cached is not None:
             return cached
+        raw_ref = str(ref or "").strip()
+        if raw_ref.startswith("path:"):
+            module_dir = Path(raw_ref.split(":", 1)[1]).expanduser().resolve()
+            manifest_path = module_dir / "manifest.toml"
+            module_manifest = read_module_manifest(manifest_path)
+            if module_manifest.kind != expected_kind:
+                raise RuntimeError(f"Module {ref} kind mismatch: expected {expected_kind}, got {module_manifest.kind}")
+            reference = ModuleReference(
+                kind=module_manifest.kind,
+                module_id=module_manifest.id,
+                version=module_manifest.version,
+                ref=f"path:{module_dir}",
+                path=module_dir,
+                entrypoint=module_manifest.entrypoint,
+                capabilities=module_manifest.capabilities,
+            )
+            self._ref_cache[ref] = reference
+            self._ref_cache[reference.ref] = reference
+            return reference
         module_id, version = parse_module_ref(ref)
         module_dir = self._context.modules_dir / module_id / version_dir_name(version)
         manifest_path = module_dir / "manifest.toml"

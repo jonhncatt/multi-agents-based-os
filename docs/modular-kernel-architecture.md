@@ -82,6 +82,7 @@ flowchart TD
 - 通过后 promote
 - 不通过就 rollback
 - 确定性故障则走 auto-repair
+- 需要改代码时再走 patch worker
 
 ## 未来闭环
 
@@ -188,6 +189,7 @@ flowchart TD
 
 当前实现里，自修复还会先生成模块级 patch 工作区和 `repair_task.json`。
 后续无论是人工修还是 agent 修，都应该只处理 `repair_workspaces` 里的模块副本，而不是直接改 live 模块目录。
+如果 patch worker 产出的模块副本通过了验证，shadow manifest 会临时挂到这个 `path:` 模块副本上继续验证；确认无误后再决定是否 promote。
 
 ### 6. 版本化和可观测性
 

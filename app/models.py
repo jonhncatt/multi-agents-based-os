@@ -227,6 +227,7 @@ class HealthResponse(BaseModel):
     kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_repair_run: dict[str, object] = Field(default_factory=dict)
+    kernel_last_patch_worker_run: dict[str, object] = Field(default_factory=dict)
     kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
@@ -273,6 +274,13 @@ class KernelShadowAutoRepairRequest(BaseModel):
     max_attempts: int = 1
 
 
+class KernelShadowPatchWorkerRequest(BaseModel):
+    repair_run_id: str | None = None
+    replay_run_id: str | None = None
+    max_tasks: int = 1
+    promote_if_healthy: bool | None = None
+
+
 class KernelRuntimeResponse(BaseModel):
     ok: bool
     detail: str = ""
@@ -282,6 +290,7 @@ class KernelRuntimeResponse(BaseModel):
     replay: dict[str, object] = Field(default_factory=dict)
     pipeline: dict[str, object] = Field(default_factory=dict)
     repair: dict[str, object] = Field(default_factory=dict)
+    patch_worker: dict[str, object] = Field(default_factory=dict)
     kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
@@ -289,6 +298,7 @@ class KernelRuntimeResponse(BaseModel):
     kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_repair_run: dict[str, object] = Field(default_factory=dict)
+    kernel_last_patch_worker_run: dict[str, object] = Field(default_factory=dict)
     kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)

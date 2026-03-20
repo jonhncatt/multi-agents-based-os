@@ -33,6 +33,7 @@ from app.models import (
     KernelManifestUpdateRequest,
     KernelShadowPipelineRequest,
     KernelShadowAutoRepairRequest,
+    KernelShadowPatchWorkerRequest,
     KernelShadowReplayRequest,
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
@@ -245,6 +246,7 @@ def health() -> HealthResponse:
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
         kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
+        kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -262,6 +264,7 @@ def _kernel_runtime_response(
     replay: dict[str, object] | None = None,
     pipeline: dict[str, object] | None = None,
     repair: dict[str, object] | None = None,
+    patch_worker: dict[str, object] | None = None,
 ) -> KernelRuntimeResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
     tool_registry = get_agent()._debug_tool_registry_snapshot()
@@ -274,6 +277,7 @@ def _kernel_runtime_response(
         replay=dict(replay or {}),
         pipeline=dict(pipeline or {}),
         repair=dict(repair or {}),
+        patch_worker=dict(patch_worker or {}),
         kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
         kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
@@ -281,6 +285,7 @@ def _kernel_runtime_response(
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
         kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
+        kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -299,6 +304,12 @@ def _find_shadow_replay_record(run_id: str | None = None) -> dict[str, Any] | No
 def _find_upgrade_run(run_id: str | None = None) -> dict[str, Any] | None:
     runtime = get_kernel_runtime()
     payload = runtime.find_upgrade_run(run_id)
+    return payload if isinstance(payload, dict) and payload else None
+
+
+def _find_repair_run(run_id: str | None = None) -> dict[str, Any] | None:
+    runtime = get_kernel_runtime()
+    payload = runtime.find_repair_run(run_id)
     return payload if isinstance(payload, dict) and payload else None
 
 
@@ -331,6 +342,27 @@ def kernel_repair_history(limit: int = 10) -> KernelRuntimeResponse:
         ok=True,
         detail="最近 repair attempts。",
         repair={"repair_runs": summary},
+    )
+
+
+@app.get("/api/kernel/patch-workers", response_model=KernelRuntimeResponse)
+def kernel_patch_worker_history(limit: int = 10) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    runs = runtime.list_patch_worker_runs(limit=limit)
+    summary = [
+        {
+            "run_id": str(item.get("run_id") or ""),
+            "ok": bool(item.get("ok")),
+            "base_repair_run_id": str(item.get("base_repair_run_id") or ""),
+            "task_count": len(item.get("executed_tasks") or []) if isinstance(item.get("executed_tasks"), list) else 0,
+            "finished_at": str(item.get("finished_at") or ""),
+        }
+        for item in runs
+    ]
+    return _kernel_runtime_response(
+        ok=True,
+        detail="最近 patch worker runs。",
+        patch_worker={"patch_worker_runs": summary},
     )
 
 
@@ -529,6 +561,40 @@ def kernel_shadow_auto_repair(req: KernelShadowAutoRepairRequest) -> KernelRunti
         smoke=smoke,
         replay=replay,
         repair=repair,
+    )
+
+
+@app.post("/api/kernel/shadow/patch-worker", response_model=KernelRuntimeResponse)
+def kernel_shadow_patch_worker(req: KernelShadowPatchWorkerRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    repair_run = _find_repair_run(req.repair_run_id)
+    if not isinstance(repair_run, dict):
+        return _kernel_runtime_response(
+            ok=False,
+            detail="未找到可执行 patch worker 的 repair run。",
+        )
+    replay_source_run_id = req.replay_run_id or str((repair_run.get("repaired_pipeline") or {}).get("replay_source_run_id") or "").strip() or None
+    replay_record = _find_shadow_replay_record(replay_source_run_id)
+    patch_worker = runtime.run_shadow_patch_worker(
+        repair_run=repair_run,
+        replay_record=replay_record if isinstance(replay_record, dict) else None,
+        max_tasks=req.max_tasks,
+        promote_if_healthy=req.promote_if_healthy,
+    )
+    pipeline = patch_worker.get("pipeline") if isinstance(patch_worker.get("pipeline"), dict) else {}
+    validation = pipeline.get("validation") if isinstance(pipeline.get("validation"), dict) else runtime.validate_shadow_manifest()
+    contracts = pipeline.get("contracts") if isinstance(pipeline.get("contracts"), dict) else {}
+    smoke = pipeline.get("smoke") if isinstance(pipeline.get("smoke"), dict) else {}
+    replay = pipeline.get("replay") if isinstance(pipeline.get("replay"), dict) else {}
+    return _kernel_runtime_response(
+        ok=bool(patch_worker.get("ok")),
+        detail="shadow patch worker 已执行。",
+        validation=validation,
+        contracts=contracts,
+        smoke=smoke,
+        replay=replay,
+        pipeline=pipeline,
+        patch_worker=patch_worker,
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -110,6 +111,12 @@ class KernelRuntime:
     def _repair_workspaces_dir(self) -> Path:
         return self.context.runtime_dir / "repair_workspaces"
 
+    def _patch_worker_runs_dir(self) -> Path:
+        return self.context.runtime_dir / "patch_worker_runs"
+
+    def _last_patch_worker_run_path(self) -> Path:
+        return self.context.runtime_dir / "last_patch_worker_run.json"
+
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -161,6 +168,33 @@ class KernelRuntime:
     def list_repair_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
         max_items = max(1, min(200, int(limit)))
         files = sorted(self._repair_runs_dir().glob("*.json"), key=lambda path: path.name, reverse=True)
+        out: list[dict[str, object]] = []
+        for path in files:
+            payload = self._read_json_dict(path)
+            if payload:
+                out.append(payload)
+            if len(out) >= max_items:
+                break
+        return out
+
+    def find_repair_run(self, run_id: str | None) -> dict[str, object]:
+        wanted = str(run_id or "").strip()
+        if not wanted:
+            return self.read_last_repair_run()
+        path = self._repair_runs_dir() / f"{wanted}.json"
+        if path.is_file():
+            return self._read_json_dict(path)
+        for item in self.list_repair_runs(limit=200):
+            if str(item.get("run_id") or "").strip() == wanted:
+                return item
+        return {}
+
+    def read_last_patch_worker_run(self) -> dict[str, object]:
+        return self._read_json_dict(self._last_patch_worker_run_path())
+
+    def list_patch_worker_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
+        max_items = max(1, min(200, int(limit)))
+        files = sorted(self._patch_worker_runs_dir().glob("*.json"), key=lambda path: path.name, reverse=True)
         out: list[dict[str, object]] = []
         for path in files:
             payload = self._read_json_dict(path)
@@ -315,6 +349,39 @@ class KernelRuntime:
             "workspace_root": str(workspace_root),
             "tasks": tasks,
         }
+
+    def _hash_tree(self, root: Path) -> dict[str, str]:
+        out: dict[str, str] = {}
+        if not root.exists():
+            return out
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = str(path.relative_to(root))
+            try:
+                out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except Exception:
+                continue
+        return out
+
+    def _changed_files(self, before: dict[str, str], after: dict[str, str]) -> list[str]:
+        keys = sorted(set(before) | set(after))
+        out: list[str] = []
+        for key in keys:
+            if before.get(key) != after.get(key):
+                out.append(key)
+        return out
+
+    def _shadow_override_from_task(self, task: dict[str, object]) -> dict[str, object]:
+        label = str(task.get("label") or "").strip()
+        module_dir = Path(str(task.get("workspace_dir") or "")).resolve() / "module"
+        path_ref = f"path:{module_dir}"
+        if label.startswith("provider:"):
+            mode = label.split(":", 1)[1].strip()
+            return {"providers": {mode: path_ref}}
+        if label in {"router", "policy", "attachment_context", "finalizer", "tool_registry"}:
+            return {label: path_ref}
+        return {}
 
     def _build_contract_check(self, *, label: str, ok: bool, kind: str, detail: str = "", **extra: object) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -1041,6 +1108,149 @@ class KernelRuntime:
         payload["repair_tasks"] = list(patch_workspace.get("tasks") or [])
         self._write_json(self._repair_runs_dir() / f"{repair_run_id}.json", payload)
         self._write_json(self._last_repair_run_path(), payload)
+        return payload
+
+    def run_shadow_patch_worker(
+        self,
+        *,
+        repair_run: dict[str, object] | None = None,
+        replay_record: dict[str, object] | None = None,
+        max_tasks: int = 1,
+        promote_if_healthy: bool | None = None,
+    ) -> dict[str, object]:
+        from app.agent import OfficeAgent
+        from app.models import ChatSettings
+
+        repair_payload = dict(repair_run or self.read_last_repair_run())
+        run_id = self._pipeline_run_id()
+        started_at = datetime.now(timezone.utc).isoformat()
+        tasks = repair_payload.get("repair_tasks")
+        task_items = list(tasks) if isinstance(tasks, list) else []
+        if not task_items:
+            payload = {
+                "ok": False,
+                "run_id": run_id,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "missing_repair_tasks",
+            }
+            return payload
+
+        executed_tasks: list[dict[str, object]] = []
+        shadow_overrides: dict[str, object] = {}
+        limit = max(1, min(10, int(max_tasks)))
+
+        for task in task_items[:limit]:
+            task_payload = dict(task or {})
+            task_dir = Path(str(task_payload.get("workspace_dir") or "")).resolve()
+            module_dir = task_dir / "module"
+            repair_task_path = task_dir / "repair_task.json"
+            before_hashes = self._hash_tree(module_dir)
+            worker_runtime_dir = task_dir / "_runtime"
+            worker_cfg = replace(
+                self.supervisor._config,
+                workspace_root=task_dir,
+                runtime_dir=worker_runtime_dir,
+                active_manifest_path=worker_runtime_dir / "active_manifest.json",
+                shadow_manifest_path=worker_runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=worker_runtime_dir / "rollback_pointer.json",
+                module_health_path=worker_runtime_dir / "module_health.json",
+                sessions_dir=task_dir / "_sessions",
+                uploads_dir=task_dir / "_uploads",
+                shadow_logs_dir=task_dir / "_shadow_logs",
+                token_stats_path=task_dir / "_token_stats.json",
+                allowed_roots=[task_dir],
+                default_extra_allowed_roots=[],
+                enable_shadow_logging=False,
+            )
+            worker_runtime = build_kernel_runtime(worker_cfg)
+            worker_agent = OfficeAgent(worker_cfg, kernel_runtime=worker_runtime)
+            settings = ChatSettings(enable_tools=True, response_style="short", max_output_tokens=12000)
+            message = (
+                f"你正在修复一个 shadow 模块副本。先读取 {repair_task_path}，再检查并修改 {module_dir} 下文件。"
+                f"只允许修改 {module_dir} 内的文件，不要碰 live 代码，不要修改 {task_dir} 之外任何路径。"
+                "目标是让这个模块通过 repair_task.json 指定的修复目标。"
+                "必须实际调用读写工具完成修改。完成后简要说明修改了哪些文件。"
+            )
+            (
+                text,
+                tool_events,
+                _attachment_note,
+                execution_plan,
+                execution_trace,
+                pipeline_hooks,
+                _debug_flow,
+                _agent_panels,
+                active_roles,
+                current_role,
+                _role_states,
+                answer_bundle,
+                token_usage,
+                effective_model,
+                route_state,
+            ) = worker_agent.run_chat(
+                history_turns=[],
+                summary="",
+                user_message=message,
+                attachment_metas=[],
+                settings=settings,
+                session_id=f"repair-worker-{run_id}",
+                route_state={},
+                progress_cb=None,
+            )
+            after_hashes = self._hash_tree(module_dir)
+            changed_files = self._changed_files(before_hashes, after_hashes)
+            override = self._shadow_override_from_task(task_payload)
+            if "providers" in override:
+                shadow_overrides.setdefault("providers", {})
+                shadow_overrides["providers"].update(dict(override.get("providers") or {}))  # type: ignore[index]
+            else:
+                shadow_overrides.update(override)
+            executed_tasks.append(
+                {
+                    "label": str(task_payload.get("label") or ""),
+                    "workspace_dir": str(task_dir),
+                    "module_dir": str(module_dir),
+                    "changed_files": changed_files,
+                    "tool_event_count": len(tool_events),
+                    "execution_plan": execution_plan,
+                    "execution_trace_tail": execution_trace[-10:],
+                    "pipeline_hook_count": len(pipeline_hooks),
+                    "active_roles": active_roles,
+                    "current_role": current_role,
+                    "answer_bundle": answer_bundle,
+                    "text_preview": str(text or "")[:600],
+                    "token_usage": token_usage,
+                    "effective_model": effective_model,
+                    "route_state": route_state,
+                }
+            )
+
+        base_pipeline = repair_payload.get("repaired_pipeline")
+        base_pipeline = dict(base_pipeline) if isinstance(base_pipeline, dict) else {}
+        smoke_message = str(base_pipeline.get("smoke_message") or "给我今天的新闻")
+        validate_provider = bool(base_pipeline.get("validate_provider", True))
+        promote_flag = bool(promote_if_healthy if promote_if_healthy is not None else base_pipeline.get("promote_if_healthy", False))
+        pipeline = self.run_shadow_pipeline(
+            overrides=shadow_overrides,
+            smoke_message=smoke_message,
+            validate_provider=validate_provider,
+            replay_record=replay_record,
+            promote_if_healthy=promote_flag,
+        )
+        payload = {
+            "ok": bool(pipeline.get("ok")),
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "base_repair_run_id": str(repair_payload.get("run_id") or ""),
+            "shadow_overrides": shadow_overrides,
+            "executed_tasks": executed_tasks,
+            "pipeline": pipeline,
+        }
+        patch_runs_dir = self._patch_worker_runs_dir()
+        self._write_json(patch_runs_dir / f"{run_id}.json", payload)
+        self._write_json(self._last_patch_worker_run_path(), payload)
         return payload
 
 
