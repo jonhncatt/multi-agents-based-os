@@ -205,6 +205,15 @@ class SessionListResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
+    product_profile: str = ""
+    product_title: str = ""
+    product_tagline: str = ""
+    product_kernel_title: str = ""
+    product_kernel_subtitle: str = ""
+    product_role_title: str = ""
+    product_role_legend: str = ""
+    show_kernel_console: bool = True
+    show_role_board: bool = True
     app_version: str = ""
     build_version: str = ""
     model_default: str

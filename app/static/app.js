@@ -24,6 +24,8 @@ const deleteSessionBtn = document.getElementById("deleteSessionBtn");
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
 const appVersionView = document.getElementById("appVersionView");
+const productTitleView = document.getElementById("productTitle");
+const productHintView = document.getElementById("productHint");
 
 const modelInput = document.getElementById("modelInput");
 const execModeInput = document.getElementById("execModeInput");
@@ -55,6 +57,12 @@ const moduleBay = document.getElementById("moduleBay");
 const moduleBayMeta = document.getElementById("moduleBayMeta");
 const evolutionFeed = document.getElementById("evolutionFeed");
 const evolutionFeedMeta = document.getElementById("evolutionFeedMeta");
+const kernelConsoleSection = document.getElementById("kernelConsoleSection");
+const kernelConsoleTitle = document.getElementById("kernelConsoleTitle");
+const kernelConsoleSubtitle = document.getElementById("kernelConsoleSubtitle");
+const roleBoardSection = document.getElementById("roleBoardSection");
+const roleBoardTitle = document.getElementById("roleBoardTitle");
+const roleBoardLegend = document.getElementById("roleBoardLegend");
 const runtimeDebugSections = Array.from(document.querySelectorAll(".runtime-panel .debug-only"));
 
 const RUN_FLOW_STEPS = [
@@ -1222,6 +1230,39 @@ function renderAppVersion(health = {}) {
   appVersionView.title = buildVersion || appVersion || "版本未知";
 }
 
+function renderProductProfile(health = {}) {
+  const profile = String(health.product_profile || "kernel_robot").trim() || "kernel_robot";
+  const productTitle = String(health.product_title || "Officetool Console").trim() || "Officetool Console";
+  const productTagline = String(health.product_tagline || "").trim();
+  const kernelTitle = String(health.product_kernel_title || "主核 / 模块舱 / 影子实验台").trim();
+  const kernelSubtitle = String(health.product_kernel_subtitle || "").trim();
+  const roleTitleText = String(health.product_role_title || "Role 视图").trim();
+  const roleLegendText = String(health.product_role_legend || "").trim();
+  const showKernelConsole = health.show_kernel_console !== false;
+  const showRoleBoard = health.show_role_board !== false;
+  const buildVersion = String(health.build_version || "").trim();
+
+  document.body.dataset.productProfile = profile;
+  document.title = buildVersion ? `${productTitle} · ${buildVersion}` : productTitle || "Officetool Console";
+
+  if (productTitleView) productTitleView.textContent = productTitle;
+  if (productHintView) {
+    productHintView.textContent = productTagline || "共享 runtime-core，按产品画像切换不同入口。";
+  }
+  if (kernelConsoleTitle) kernelConsoleTitle.textContent = kernelTitle || "主核 / 模块舱 / 影子实验台";
+  if (kernelConsoleSubtitle) kernelConsoleSubtitle.textContent = kernelSubtitle || "";
+  if (roleBoardTitle) roleBoardTitle.textContent = roleTitleText || "Role 视图";
+  if (roleBoardLegend) roleBoardLegend.textContent = roleLegendText || "";
+  if (kernelConsoleSection) {
+    kernelConsoleSection.hidden = !showKernelConsole;
+    kernelConsoleSection.style.display = showKernelConsole ? "" : "none";
+  }
+  if (roleBoardSection) {
+    roleBoardSection.hidden = !showRoleBoard;
+    roleBoardSection.style.display = showRoleBoard ? "" : "none";
+  }
+}
+
 const MODULE_LABELS = {
   router: { title: "Router", desc: "全局语义分诊与最小链路选择。" },
   policy: { title: "Policy", desc: "执行策略与 gate（闸门）配置。" },
@@ -1448,6 +1489,7 @@ function renderKernelConsole(health = {}) {
 
 async function refreshSystemDashboard() {
   const health = await fetch("/api/health").then((r) => r.json());
+  renderProductProfile(health);
   renderAppVersion(health);
   renderBackendPolicy(health);
   renderKernelConsole(health);

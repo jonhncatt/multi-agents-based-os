@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Officetool Kernel Console</title>
+    <title>Officetool Console</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
+  <body data-product-profile="kernel_robot">
     <div class="bg-shape bg1"></div>
     <div class="bg-shape bg2"></div>
 
@@ -15,8 +15,8 @@
       <aside class="panel">
         <div class="brand-head">
           <div>
-            <h1>Officetool Kernel Console</h1>
-            <p class="hint">主核稳定运行，模块独立协作，支持图片/文档、本地工具与影子升级。</p>
+            <h1 id="productTitle">Officetool Console</h1>
+            <p id="productHint" class="hint">正在加载产品画像与运行态。</p>
           </div>
           <div id="appVersionView" class="version-badge">版本加载中</div>
         </div>
@@ -118,12 +118,12 @@
             <span id="runStageBadge" class="stage-badge stage-idle">空闲</span>
             <span id="runStageText" class="runtime-head-text">等待发送请求</span>
           </div>
-          <section class="kernel-console-shell">
+          <section id="kernelConsoleSection" class="kernel-console-shell">
             <div class="kernel-console-head">
               <div>
                 <div class="kernel-console-kicker">Stable Kernel Runtime</div>
-                <div class="kernel-console-title">主核 / 模块舱 / 影子实验台</div>
-                <div class="kernel-console-subtitle">主核保持稳定，模块按能力分舱，升级和修复全部先在 shadow 中验证。</div>
+                <div id="kernelConsoleTitle" class="kernel-console-title">主核 / 模块舱 / 影子实验台</div>
+                <div id="kernelConsoleSubtitle" class="kernel-console-subtitle">主核保持稳定，模块按能力分舱，升级和修复全部先在 shadow 中验证。</div>
               </div>
               <div class="kernel-live-pill">
                 <span class="kernel-live-dot"></span>
@@ -171,10 +171,10 @@
               <div id="evolutionFeed" class="evolution-feed"></div>
             </article>
           </section>
-          <section class="role-board-shell">
+          <section id="roleBoardSection" class="role-board-shell">
             <div class="role-board-head">
-              <div class="role-board-title">Role 视图</div>
-              <div class="role-board-legend">role = 总称 · agent = LLM 驱动 · processor = 非 LLM · Router = agent + processor</div>
+              <div id="roleBoardTitle" class="role-board-title">Role 视图</div>
+              <div id="roleBoardLegend" class="role-board-legend">role = 总称 · agent = LLM 驱动 · processor = 非 LLM · Router = agent + processor</div>
             </div>
             <div id="runRoleBoard" class="role-board"></div>
           </section>

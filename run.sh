@@ -12,6 +12,8 @@ if [ -f .env ]; then
 fi
 
 AUTH_MODE="${OFFICETOOL_OPENAI_AUTH_MODE:-${OFFCIATOOL_OPENAI_AUTH_MODE:-auto}}"
+APP_MODULE="${OFFICETOOL_APP_MODULE:-app.kernel_robot_main:app}"
+APP_PORT="${OFFICETOOL_APP_PORT:-8080}"
 CODEX_HOME_DIR="${OFFICETOOL_CODEX_HOME:-${OFFCIATOOL_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}}"
 CODEX_AUTH_FILE="${OFFICETOOL_CODEX_AUTH_FILE:-${OFFCIATOOL_CODEX_AUTH_FILE:-$CODEX_HOME_DIR/auth.json}}"
 
@@ -45,11 +47,11 @@ case "$AUTH_MODE" in
 esac
 
 if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
-  exec "$ROOT_DIR/.venv/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+  exec "$ROOT_DIR/.venv/bin/python" -m uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$APP_PORT" --reload
 fi
 
 if command -v python3 >/dev/null 2>&1; then
-  exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+  exec python3 -m uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$APP_PORT" --reload
 fi
 
-exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+exec uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$APP_PORT" --reload

@@ -58,10 +58,12 @@ from app.models import (
 )
 from app.openai_auth import OpenAIAuthManager
 from app.pricing import estimate_usage_cost
+from app.product_profiles import ensure_product_profile_env
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
 
+PRODUCT_PROFILE = ensure_product_profile_env()
 config = load_config()
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
@@ -194,7 +196,7 @@ def get_agent() -> OfficeAgent:
         _agent = OfficeAgent(config, kernel_runtime=get_kernel_runtime())
     return _agent
 
-app = FastAPI(title="Officetool", version=APP_VERSION)
+app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -234,6 +236,15 @@ def health() -> HealthResponse:
     tool_registry = agent._debug_tool_registry_snapshot()
     return HealthResponse(
         ok=True,
+        product_profile=PRODUCT_PROFILE.key,
+        product_title=PRODUCT_PROFILE.sidebar_title,
+        product_tagline=PRODUCT_PROFILE.sidebar_hint,
+        product_kernel_title=PRODUCT_PROFILE.kernel_title,
+        product_kernel_subtitle=PRODUCT_PROFILE.kernel_subtitle,
+        product_role_title=PRODUCT_PROFILE.role_title,
+        product_role_legend=PRODUCT_PROFILE.role_legend,
+        show_kernel_console=PRODUCT_PROFILE.show_kernel_console,
+        show_role_board=PRODUCT_PROFILE.show_role_board,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         model_default=config.default_model,
