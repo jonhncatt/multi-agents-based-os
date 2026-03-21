@@ -847,6 +847,84 @@
     }
   },
   {
+    "name": "helper_hook_before_route_finalize_no_longer_changes_task_type",
+    "kind": "helper",
+    "helper": "_hook_before_route_finalize",
+    "args": {
+      "route": {
+        "task_type": "simple_understanding",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_understanding_direct",
+        "use_planner": false,
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false,
+        "use_web_prefetch": false,
+        "use_conflict_detector": false
+      },
+      "router_raw": "{\"source\":\"rules\"}",
+      "planner_user_message": "请解释这个设计文档的整体思路",
+      "attachment_issues": [
+        "文档解析失败"
+      ],
+      "followup_has_attachments": true,
+      "followup_attachment_requires_tools": true,
+      "attachment_metas": [
+        {
+          "original_name": "spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "route.task_type": "simple_understanding",
+        "route.use_worker_tools": false
+      }
+    }
+  },
+  {
+    "name": "helper_route_runtime_override_attachment_context_requires_tooling",
+    "kind": "helper",
+    "helper": "_debug_route_runtime_override_attachment_context_requires_tooling",
+    "assert": {
+      "equals": {
+        "route.task_type": "attachment_tooling",
+        "route.use_worker_tools": true,
+        "route.execution_policy": "attachment_tooling_generic"
+      },
+      "contains": {
+        "router_raw": [
+          "attachment_context_incomplete_requires_tooling"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_route_runtime_override_force_tool_followup",
+    "kind": "helper",
+    "helper": "_debug_route_runtime_override_force_tool_followup",
+    "assert": {
+      "equals": {
+        "route.use_worker_tools": true,
+        "route.execution_policy": "continue_tooling"
+      },
+      "contains": {
+        "router_raw": [
+          "followup_execution_ack_forces_tool_continuation"
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_hook_before_reviewer_disables_review_for_understanding_policy",
     "kind": "helper",
     "helper": "_hook_before_reviewer",

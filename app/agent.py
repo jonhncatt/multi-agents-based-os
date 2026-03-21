@@ -756,6 +756,79 @@ class OfficeAgent:
     def _debug_role_execution_smoke_matrix(self) -> dict[str, Any]:
         return debug_role_execution_smoke_matrix_helper(self)
 
+    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
+        base_route = self._normalize_route_decision(
+            {
+                "task_type": "simple_understanding",
+                "complexity": "low",
+                "use_planner": False,
+                "use_worker_tools": False,
+                "use_reviewer": False,
+                "use_revision": False,
+                "use_structurer": False,
+                "use_web_prefetch": False,
+                "use_conflict_detector": False,
+                "execution_policy": "attachment_understanding_direct",
+                "primary_intent": "understanding",
+                "reason": "debug_base_route",
+                "summary": "debug base route",
+            },
+            fallback={"task_type": "simple_understanding"},
+            settings=ChatSettings(enable_tools=True, response_style="short"),
+        )
+        route, raw = self._apply_route_runtime_overrides(
+            route=base_route,
+            router_raw='{"source":"rules"}',
+            user_message="请解释这个设计文档的整体思路",
+            attachment_metas=[
+                {
+                    "original_name": "spec.pdf",
+                    "suffix": ".pdf",
+                    "kind": "document",
+                    "size": 7340032,
+                }
+            ],
+            settings=ChatSettings(enable_tools=True, response_style="short"),
+            attachment_issues=["文档解析失败"],
+            followup_has_attachments=False,
+            followup_attachment_requires_tools=False,
+            force_tool_followup=False,
+        )
+        return {"route": route, "router_raw": raw}
+
+    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
+        base_route = self._normalize_route_decision(
+            {
+                "task_type": "simple_qa",
+                "complexity": "low",
+                "use_planner": False,
+                "use_worker_tools": False,
+                "use_reviewer": False,
+                "use_revision": False,
+                "use_structurer": False,
+                "use_web_prefetch": False,
+                "use_conflict_detector": False,
+                "execution_policy": "qa_direct",
+                "primary_intent": "qa",
+                "reason": "debug_base_route",
+                "summary": "debug base route",
+            },
+            fallback={"task_type": "simple_qa"},
+            settings=ChatSettings(enable_tools=True, response_style="short"),
+        )
+        route, raw = self._apply_route_runtime_overrides(
+            route=base_route,
+            router_raw='{"source":"rules"}',
+            user_message="继续，直接去搜代码并执行",
+            attachment_metas=[],
+            settings=ChatSettings(enable_tools=True, response_style="short"),
+            attachment_issues=[],
+            followup_has_attachments=False,
+            followup_attachment_requires_tools=False,
+            force_tool_followup=True,
+        )
+        return {"route": route, "router_raw": raw}
+
     def _debug_kernel_shadow_package_syncs_module_version(self) -> dict[str, Any]:
         return debug_kernel_shadow_package_syncs_module_version_helper(self)
 
@@ -1345,6 +1418,10 @@ class OfficeAgent:
             settings=settings,
             route_state=route_state,
             inline_followup_context=bool(inline_followup_source),
+            attachment_issues=attachment_issues,
+            followup_has_attachments=followup_has_attachments,
+            followup_attachment_requires_tools=followup_attachment_requires_tools,
+            force_tool_followup=force_tool_followup,
         )
         route_before_hook = dict(route)
         route_finalize_hook = self._run_pipeline_hook(
@@ -4515,114 +4592,17 @@ class OfficeAgent:
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
     ) -> HookResult:
-        updated_route = dict(route or {})
-        updated_raw = str(router_raw or "")
-        trace_notes: list[str] = []
-        debug_entries: list[HookDebugEntry] = []
-
-        attachment_context_incomplete = any(
-            ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
-            for issue in (attachment_issues or [])
+        _ = (
+            planner_user_message,
+            attachment_issues,
+            followup_has_attachments,
+            followup_attachment_requires_tools,
+            attachment_metas,
+            settings,
         )
-        if (
-            attachment_context_incomplete
-            and settings.enable_tools
-            and not updated_route.get("use_worker_tools")
-            and self._looks_like_understanding_request(planner_user_message)
-        ):
-            updated_route = self._normalize_route_decision(
-                {
-                    "task_type": "attachment_tooling",
-                    "complexity": "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader"],
-                    "reason": "backend_attachment_context_incomplete_requires_tooling",
-                    "summary": "检测到附件仅注入了预览或解析失败，Coordinator 已切回 Worker 工具链先完成读取。",
-                    "source": "backend_override",
-                },
-                fallback=updated_route,
-                settings=settings,
-            )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "attachment_context_incomplete_requires_tooling",
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
-            trace_notes.append("Hook(before_route_finalize): 附件仅有预览或解析失败，已改走 attachment_tooling。")
-            debug_entries.append(
-                HookDebugEntry(
-                    stage="backend_hook",
-                    title="Hook(before_route_finalize) 切换附件工具链",
-                    detail="reason=attachment_context_incomplete_requires_tooling",
-                )
-            )
-
-        if followup_has_attachments and settings.enable_tools and not updated_route.get("use_worker_tools"):
-            updated_route = self._normalize_route_decision(
-                {
-                    "task_type": "attachment_tooling",
-                    "complexity": "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader"],
-                    "reason": (
-                        "backend_followup_attachment_requires_tooling"
-                        if followup_attachment_requires_tools
-                        else "backend_followup_attachment_prefers_worker_tooling"
-                    ),
-                    "summary": (
-                        "跟进轮附件本轮仅提供路径，Coordinator 已强制启用 Worker 工具链继续读取。"
-                        if followup_attachment_requires_tools
-                        else "检测到跟进轮新增附件，Coordinator 已优先切回 Worker 工具链，避免只基于预览或内联片段误判。"
-                    ),
-                    "source": "backend_override",
-                },
-                fallback=updated_route,
-                settings=settings,
-            )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": (
-                        "followup_attachment_requires_tooling"
-                        if followup_attachment_requires_tools
-                        else "followup_attachment_prefers_worker_tooling"
-                    ),
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
-            trace_notes.append("Hook(before_route_finalize): 跟进轮附件优先改走 Worker 工具链。")
-            debug_entries.append(
-                HookDebugEntry(
-                    stage="backend_hook",
-                    title="Hook(before_route_finalize) 跟进附件改走工具链",
-                    detail=(
-                        "reason=followup_attachment_requires_tooling"
-                        if followup_attachment_requires_tools
-                        else "reason=followup_attachment_prefers_worker_tooling"
-                    ),
-                )
-            )
         return HookResult(
-            route=updated_route,
-            router_raw=updated_raw,
-            trace_notes=trace_notes,
-            debug_entries=debug_entries,
+            route=dict(route or {}),
+            router_raw=str(router_raw or ""),
         )
 
     def _hook_before_worker_prompt(
@@ -4641,38 +4621,9 @@ class OfficeAgent:
         trace_notes: list[str] = []
         debug_entries: list[HookDebugEntry] = []
         prompt_injections: list[HookPromptInjection] = []
-
-        if force_tool_followup and not updated_route.get("use_worker_tools"):
-            updated_route = self._coordinator_apply_tool_mode(
-                state=execution_state,
-                route=updated_route,
-                settings=settings,
-                tool_mode="forced",
-                reason="followup_execution_ack_forces_tool_continuation",
-                summary="检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
-                use_planner=True,
-            )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "followup_execution_ack_forces_tool_continuation",
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
-            trace_notes.append("Hook(before_worker_prompt): 已识别为工具链续执行确认，继续 Worker 工具链。")
-            debug_entries.append(
-                HookDebugEntry(
-                    stage="backend_hook",
-                    title="Hook(before_worker_prompt) 切换工具模式",
-                    detail=(
-                        "reason=followup_execution_ack_forces_tool_continuation\n"
-                        f"tool_mode={execution_state.tool_mode}\n"
-                        f"tool_latch={str(execution_state.tool_latch).lower()}\n"
-                        f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
-                    ),
-                )
-            )
+        _ = (planner_user_message, attachment_metas)
+        if force_tool_followup and updated_route.get("use_worker_tools"):
+            trace_notes.append("Hook(before_worker_prompt): 本轮已带工具续执行标记，继续沿用 Worker 工具链。")
 
         if settings.enable_tools and bool(updated_route.get("use_worker_tools")) and not self._coordinator_tools_enabled(execution_state):
             updated_route = self._coordinator_apply_tool_mode(
@@ -4727,11 +4678,8 @@ class OfficeAgent:
                 )
             )
 
-        raw_spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
-        raw_evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
-        route_task_type = str(updated_route.get("task_type") or "").strip().lower()
-        spec_lookup_request = raw_spec_lookup_request and route_task_type == "evidence_lookup"
-        evidence_required_mode = raw_evidence_required_mode and route_task_type == "evidence_lookup"
+        spec_lookup_request = bool(updated_route.get("spec_lookup_request"))
+        evidence_required_mode = bool(updated_route.get("evidence_required_mode"))
 
         if spec_lookup_request:
             prompt_injections.append(
@@ -4762,7 +4710,7 @@ class OfficeAgent:
                     trace_note="已启用证据优先模式。",
                 )
             )
-        if updated_route.get("use_worker_tools") and self._should_auto_search_default_roots(planner_user_message, attachment_metas):
+        if bool(updated_route.get("default_root_search")):
             prompt_injections.append(
                 HookPromptInjection(
                     position="append",
@@ -6698,6 +6646,10 @@ class OfficeAgent:
         ):
             normalized[key] = bool(normalized.get(key))
 
+        raw_spec_lookup_request = bool(normalized.get("spec_lookup_request"))
+        raw_evidence_required_mode = bool(normalized.get("evidence_required_mode"))
+        raw_default_root_search = bool(normalized.get("default_root_search"))
+
         if not settings.enable_tools:
             normalized["use_worker_tools"] = False
             normalized["use_web_prefetch"] = False
@@ -6714,6 +6666,15 @@ class OfficeAgent:
 
         if not normalized["use_worker_tools"]:
             normalized["use_web_prefetch"] = False
+
+        route_task_type = str(normalized.get("task_type") or "").strip().lower()
+        normalized["spec_lookup_request"] = raw_spec_lookup_request and route_task_type == "evidence_lookup"
+        normalized["evidence_required_mode"] = (
+            raw_evidence_required_mode
+            and route_task_type == "evidence_lookup"
+            and bool(normalized["use_worker_tools"])
+        )
+        normalized["default_root_search"] = raw_default_root_search and bool(normalized["use_worker_tools"])
 
         normalized["reason"] = str(normalized.get("reason") or fallback.get("reason") or "").strip()
         normalized["source"] = str(normalized.get("source") or fallback.get("source") or "rules").strip() or "rules"
@@ -6938,6 +6899,9 @@ class OfficeAgent:
             "router_model": "",
             "primary_intent": primary_intent,
             "execution_policy": self._default_execution_policy_for_intent(primary_intent),
+            "spec_lookup_request": spec_lookup_request,
+            "evidence_required_mode": evidence_required,
+            "default_root_search": bool(settings.enable_tools and self._should_auto_search_default_roots(user_message, attachment_metas)),
         }
         return self._resolve_execution_policy(
             primary_intent=primary_intent,
@@ -7043,6 +7007,10 @@ class OfficeAgent:
         settings: ChatSettings,
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
+        attachment_issues: list[str] | None = None,
+        followup_has_attachments: bool = False,
+        followup_attachment_requires_tools: bool = False,
+        force_tool_followup: bool = False,
     ) -> tuple[dict[str, Any], str]:
         rules_route = self._route_request_by_rules(
             user_message=user_message,
@@ -7061,23 +7029,58 @@ class OfficeAgent:
                 },
                 ensure_ascii=False,
             )
-        route, raw = self._run_router(
-            requested_model=requested_model,
+        else:
+            route, raw = self._run_router(
+                requested_model=requested_model,
+                user_message=user_message,
+                summary=summary,
+                attachment_metas=attachment_metas,
+                settings=settings,
+                rules_route=rules_route,
+            )
+        return self._apply_route_runtime_overrides(
+            route=route,
+            router_raw=raw,
             user_message=user_message,
-            summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
-            rules_route=rules_route,
+            attachment_issues=attachment_issues or [],
+            followup_has_attachments=followup_has_attachments,
+            followup_attachment_requires_tools=followup_attachment_requires_tools,
+            force_tool_followup=force_tool_followup,
+        )
+
+    def _apply_route_runtime_overrides(
+        self,
+        *,
+        route: dict[str, Any],
+        router_raw: str,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+        attachment_issues: list[str],
+        followup_has_attachments: bool,
+        followup_attachment_requires_tools: bool,
+        force_tool_followup: bool,
+    ) -> tuple[dict[str, Any], str]:
+        updated_route = dict(route or {})
+        updated_raw = str(router_raw or "")
+        if not settings.enable_tools:
+            return updated_route, updated_raw
+
+        attachment_context_incomplete = any(
+            ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
+            for issue in (attachment_issues or [])
         )
         if (
-            settings.enable_tools
-            and not route.get("use_worker_tools")
-            and self._should_force_initial_tool_execution(user_message, attachment_metas)
+            attachment_context_incomplete
+            and not updated_route.get("use_worker_tools")
+            and self._looks_like_understanding_request(user_message)
         ):
-            forced_route = self._normalize_route_decision(
+            updated_route = self._normalize_route_decision(
                 {
-                    "task_type": "code_lookup" if self._looks_like_local_code_lookup_request(user_message, attachment_metas) else route.get("task_type"),
-                    "complexity": route.get("complexity") or "medium",
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
                     "use_planner": True,
                     "use_worker_tools": True,
                     "use_reviewer": False,
@@ -7085,25 +7088,132 @@ class OfficeAgent:
                     "use_structurer": False,
                     "use_web_prefetch": False,
                     "use_conflict_detector": False,
-                    "specialists": ["file_reader"] if self._looks_like_local_code_lookup_request(user_message, attachment_metas) else route.get("specialists") or [],
-                    "reason": "backend_force_initial_tool_execution",
-                    "summary": "后端判定本轮属于本地搜索/代码定位任务，直接升级为 Worker 工具链。",
+                    "specialists": ["file_reader"],
+                    "execution_policy": "attachment_tooling_generic",
+                    "reason": "backend_attachment_context_incomplete_requires_tooling",
+                    "summary": "检测到附件只有预览或解析失败，路由已直接切回读取工具链。",
                     "source": "backend_override",
                 },
-                fallback=route,
+                fallback=updated_route,
                 settings=settings,
             )
-            raw = json.dumps(
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "attachment_context_incomplete_requires_tooling",
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+
+        if followup_has_attachments and not updated_route.get("use_worker_tools"):
+            updated_route = self._normalize_route_decision(
+                {
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
+                    "execution_policy": "attachment_tooling_generic",
+                    "reason": (
+                        "backend_followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "backend_followup_attachment_prefers_worker_tooling"
+                    ),
+                    "summary": (
+                        "跟进轮附件本轮只给了路径或需要全文读取，路由已直接切回 Worker 工具链。"
+                        if followup_attachment_requires_tools
+                        else "检测到跟进轮新增附件，路由已优先切回 Worker 工具链。"
+                    ),
+                    "source": "backend_override",
+                },
+                fallback=updated_route,
+                settings=settings,
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": (
+                        "followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "followup_attachment_prefers_worker_tooling"
+                    ),
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+
+        if force_tool_followup and not updated_route.get("use_worker_tools"):
+            local_code_lookup = self._looks_like_local_code_lookup_request(user_message, attachment_metas)
+            updated_route = self._normalize_route_decision(
+                {
+                    "task_type": "code_lookup" if local_code_lookup else updated_route.get("task_type"),
+                    "complexity": updated_route.get("complexity") or "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"] if (attachment_metas or local_code_lookup) else updated_route.get("specialists") or [],
+                    "execution_policy": "continue_tooling",
+                    "reason": "backend_followup_execution_ack_forces_tool_continuation",
+                    "summary": "检测到用户明确要求继续执行，路由已直接延续 Worker 工具链。",
+                    "source": "backend_override",
+                },
+                fallback=updated_route,
+                settings=settings,
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "followup_execution_ack_forces_tool_continuation",
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+
+        if (
+            not updated_route.get("use_worker_tools")
+            and self._should_force_initial_tool_execution(user_message, attachment_metas)
+        ):
+            local_code_lookup = self._looks_like_local_code_lookup_request(user_message, attachment_metas)
+            updated_route = self._normalize_route_decision(
+                {
+                    "task_type": "code_lookup" if local_code_lookup else updated_route.get("task_type"),
+                    "complexity": updated_route.get("complexity") or "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"] if local_code_lookup else updated_route.get("specialists") or [],
+                    "execution_policy": "code_lookup_with_tools" if local_code_lookup else updated_route.get("execution_policy") or "attachment_tooling_generic",
+                    "reason": "backend_force_initial_tool_execution",
+                    "summary": "后端判定本轮属于本地搜索或代码定位任务，直接升级为 Worker 工具链。",
+                    "source": "backend_override",
+                },
+                fallback=updated_route,
+                settings=settings,
+            )
+            updated_raw = json.dumps(
                 {
                     "source": "backend_override",
                     "reason": "force_initial_tool_execution",
                     "previous_source": route.get("source"),
-                    "task_type": forced_route.get("task_type"),
+                    "task_type": updated_route.get("task_type"),
                 },
                 ensure_ascii=False,
             )
-            return forced_route, raw
-        return route, raw
+        return updated_route, updated_raw
 
     def _router_system_hint(self, route: dict[str, Any]) -> str:
         task_type = str(route.get("task_type") or "standard").strip()
