@@ -122,8 +122,8 @@
             <div class="kernel-console-head">
               <div>
                 <div class="kernel-console-kicker">Stable Kernel Runtime</div>
-                <div id="kernelConsoleTitle" class="kernel-console-title">主核 / 模块舱 / 影子实验台</div>
-                <div id="kernelConsoleSubtitle" class="kernel-console-subtitle">主核保持稳定，模块按能力分舱，升级和修复全部先在 shadow 中验证。</div>
+                <div id="kernelConsoleTitle" class="kernel-console-title">KernelHost / Blackboard / Capability Modules</div>
+                <div id="kernelConsoleSubtitle" class="kernel-console-subtitle">主核只驱动，不思考；思考、动作、输出和记忆都由模块承担，并通过黑板交换状态。</div>
               </div>
               <div class="kernel-live-pill">
                 <span class="kernel-live-dot"></span>
@@ -133,28 +133,29 @@
                 </div>
               </div>
             </div>
+            <div id="systemFlowRibbon" class="system-flow-ribbon">等待主核装配信息...</div>
             <div class="kernel-console-grid">
               <article class="kernel-console-card">
-                <div class="kernel-card-kicker">Stable Kernel</div>
-                <div class="kernel-card-title">主核反应堆</div>
+                <div class="kernel-card-kicker">KernelHost</div>
+                <div class="kernel-card-title">主核驱动</div>
                 <div id="kernelCoreMetrics" class="kernel-stat-grid"></div>
               </article>
               <article class="kernel-console-card">
-                <div class="kernel-card-kicker">Shadow Lab</div>
-                <div class="kernel-card-title">影子实验台</div>
+                <div class="kernel-card-kicker">Blackboard</div>
+                <div class="kernel-card-title">共享黑板</div>
                 <div id="shadowLabMetrics" class="kernel-stat-grid"></div>
               </article>
               <article class="kernel-console-card">
-                <div class="kernel-card-kicker">Adaptive Overlay</div>
-                <div class="kernel-card-title">个体进化层</div>
+                <div class="kernel-card-kicker">Shadow / Overlay</div>
+                <div class="kernel-card-title">升级与进化</div>
                 <div id="evolutionMetrics" class="kernel-stat-grid"></div>
               </article>
             </div>
             <article class="kernel-console-card module-bay-shell">
               <div class="kernel-card-head">
                 <div>
-                  <div class="kernel-card-kicker">Module Bay</div>
-                  <div class="kernel-card-title">模块舱</div>
+                  <div class="kernel-card-kicker">Capability Modules</div>
+                  <div class="kernel-card-title">能力模块</div>
                 </div>
                 <div id="moduleBayMeta" class="kernel-card-meta">等待健康数据</div>
               </div>

@@ -50,6 +50,7 @@ const runLlmFlowView = document.getElementById("runLlmFlowView");
 const runRoleBoard = document.getElementById("runRoleBoard");
 const kernelLiveLabel = document.getElementById("kernelLiveLabel");
 const kernelLiveMeta = document.getElementById("kernelLiveMeta");
+const systemFlowRibbon = document.getElementById("systemFlowRibbon");
 const kernelCoreMetrics = document.getElementById("kernelCoreMetrics");
 const shadowLabMetrics = document.getElementById("shadowLabMetrics");
 const evolutionMetrics = document.getElementById("evolutionMetrics");
@@ -1337,6 +1338,68 @@ function renderKernelStatGrid(container, items) {
   });
 }
 
+function toBadgeClass(value) {
+  return String(value || "module")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-");
+}
+
+function buildModuleCard(item, options = {}) {
+  const node = document.createElement("article");
+  const isPrimary = Boolean(options?.primary);
+  const isSupport = Boolean(options?.support);
+  const badgeLabel = String(options?.badge || item?.kind || "MODULE");
+  const badgeClass = toBadgeClass(badgeLabel);
+  const status = String(options?.status || "active").trim().toLowerCase() || "active";
+  node.className = `module-card status-${status}${isPrimary ? " is-primary" : ""}${isSupport ? " support-card" : ""}`;
+  node.innerHTML = `
+    <div class="module-card-head">
+      <div>
+        <div class="module-card-title">${String(item?.title || item?.module_id || item?.key || "Module")}</div>
+        <div class="module-card-ref">${String(item?.module_id || item?.ref || item?.key || "-")}</div>
+      </div>
+      <span class="module-status-badge kind-${badgeClass}">${badgeLabel}</span>
+    </div>
+    <div class="module-card-desc">${String(item?.description || "模块描述缺失。")}</div>
+    <div class="module-card-stats">
+      ${(Array.isArray(item?.stats) ? item.stats : []).map((stat) => `<span>${stat}</span>`).join("")}
+    </div>
+    <div class="module-card-signals">
+      ${(Array.isArray(item?.signals) ? item.signals : []).map((signal) => `<span class="signal-chip">${String(signal)}</span>`).join("")}
+      ${isPrimary ? `<span class="signal-chip primary-chip">primary</span>` : ""}
+    </div>
+    ${String(item?.error || "").trim() ? `<div class="module-card-error">${String(item.error).trim()}</div>` : ""}
+  `;
+  return node;
+}
+
+function renderSystemFlow(health = {}) {
+  if (!systemFlowRibbon) return;
+  const hostRuntime = health?.kernel_host_runtime || {};
+  const blackboard = hostRuntime?.blackboard || {};
+  const flowItems = [
+    { label: "KernelHost", value: "host", meta: String(blackboard?.status || "idle").trim() || "idle", tone: "host" },
+    { label: "AgentModule", value: String(hostRuntime?.primary_agent_module?.module_id || "-"), meta: String(hostRuntime?.primary_agent_module?.title || "未装载"), tone: "agent" },
+    { label: "ToolModule", value: String(hostRuntime?.primary_tool_module?.module_id || "-"), meta: String(hostRuntime?.primary_tool_module?.title || "未装载"), tone: "tool" },
+    { label: "OutputModule", value: String(hostRuntime?.primary_output_module?.module_id || "-"), meta: String(hostRuntime?.primary_output_module?.title || "未装载"), tone: "output" },
+    { label: "MemoryModule", value: String(hostRuntime?.primary_memory_module?.module_id || "-"), meta: String(hostRuntime?.primary_memory_module?.title || "未装载"), tone: "memory" },
+    { label: "Blackboard", value: String(blackboard?.request_id || "waiting").slice(0, 16), meta: String(blackboard?.selected_agent_module_id || "等待请求"), tone: "blackboard" },
+  ];
+
+  systemFlowRibbon.innerHTML = "";
+  flowItems.forEach((item) => {
+    const node = document.createElement("div");
+    node.className = `system-flow-node tone-${item.tone}`;
+    node.innerHTML = `
+      <div class="system-flow-label">${item.label}</div>
+      <div class="system-flow-value">${item.value}</div>
+      <div class="system-flow-meta">${item.meta}</div>
+    `;
+    systemFlowRibbon.appendChild(node);
+  });
+}
+
 function renderModuleBay(health = {}) {
   if (!moduleBay) return;
   const selected = health?.kernel_selected_modules || {};
@@ -1349,104 +1412,163 @@ function renderModuleBay(health = {}) {
   const overlay = health?.assistant_overlay_profile || {};
   const moduleAffinity = overlay?.module_affinity || {};
   const entries = Object.entries(selected);
-  const capabilityEntries = [
-    ...agentModules.map((item) => ({ kind: "Agent Module", stats: [`roles=${Array.isArray(item?.roles) ? item.roles.length : 0}`], signals: Array.isArray(item?.profiles) ? item.profiles : [], ...item })),
-    ...toolModules.map((item) => ({ kind: "Tool Module", stats: [`tools=${Array.isArray(item?.tool_names) ? item.tool_names.length : 0}`], signals: Array.isArray(item?.tool_names) ? item.tool_names.slice(0, 4) : [], ...item })),
-    ...outputModules.map((item) => ({ kind: "Output Module", stats: [`outputs=${Array.isArray(item?.output_kinds) ? item.output_kinds.length : 0}`], signals: Array.isArray(item?.output_kinds) ? item.output_kinds : [], ...item })),
-    ...memoryModules.map((item) => ({ kind: "Memory Module", stats: [`signals=${Array.isArray(item?.signal_kinds) ? item.signal_kinds.length : 0}`], signals: Array.isArray(item?.signal_kinds) ? item.signal_kinds : [], ...item })),
-  ];
+  const primaryIds = new Set(
+    [
+      hostRuntime?.primary_agent_module?.module_id,
+      hostRuntime?.primary_tool_module?.module_id,
+      hostRuntime?.primary_output_module?.module_id,
+      hostRuntime?.primary_memory_module?.module_id,
+    ].filter(Boolean)
+  );
 
   moduleBay.innerHTML = "";
-  if (!entries.length && !capabilityEntries.length) {
+  if (!entries.length && !agentModules.length && !toolModules.length && !outputModules.length && !memoryModules.length) {
     moduleBay.textContent = "模块舱为空。";
     if (moduleBayMeta) moduleBayMeta.textContent = "0 modules";
     return;
   }
 
   if (moduleBayMeta) {
-    const capabilityCount = capabilityEntries.length;
-    moduleBayMeta.textContent = `${entries.length} 个 kernel 模块 · ${capabilityCount} 个 capability 模块`;
+    const capabilityCount = agentModules.length + toolModules.length + outputModules.length + memoryModules.length;
+    moduleBayMeta.textContent = `${capabilityCount} 个能力模块 · ${entries.length} 个支撑模块`;
   }
 
-  capabilityEntries.forEach((item) => {
-    const card = document.createElement("article");
-    card.className = "module-card status-active capability-card";
-    card.innerHTML = `
-      <div class="module-card-head">
-        <div>
-          <div class="module-card-title">${String(item.kind || "Module")}</div>
-          <div class="module-card-ref">${String(item.module_id || "-")}</div>
-        </div>
-        <span class="module-status-badge">MODULE</span>
-      </div>
-      <div class="module-card-desc">${String(item.description || item.title || "模块描述缺失。")}</div>
-      <div class="module-card-stats">
-        <span>title=${String(item.title || "-")}</span>
-        ${(Array.isArray(item.stats) ? item.stats : []).map((stat) => `<span>${stat}</span>`).join("")}
-      </div>
-      <div class="module-card-signals">
-        ${(Array.isArray(item.signals) ? item.signals : []).map((signal) => `<span class="signal-chip">${String(signal)}</span>`).join("")}
-      </div>
-    `;
-    moduleBay.appendChild(card);
-  });
-
-  entries.forEach(([key, ref]) => {
+  const supportEntries = entries.map(([key, ref]) => {
     const meta = MODULE_LABELS[key] || { title: key, desc: "未命名模块。" };
     const healthItem = moduleHealth?.[key] || {};
     const status = String(healthItem?.status || "active").trim().toLowerCase() || "active";
     const failureCount = Number(healthItem?.failure_count || 0);
     const overlayItems = normalizeCounterItems(moduleAffinity?.[key.replace("provider:", "")] || moduleAffinity?.[key] || []);
-
-    const card = document.createElement("article");
-    card.className = `module-card status-${status}`;
-
-    const head = document.createElement("div");
-    head.className = "module-card-head";
-    head.innerHTML = `
-      <div>
-        <div class="module-card-title">${meta.title}</div>
-        <div class="module-card-ref">${String(ref || "-")}</div>
-      </div>
-      <span class="module-status-badge">${status}</span>
-    `;
-    card.appendChild(head);
-
-    const desc = document.createElement("div");
-    desc.className = "module-card-desc";
-    desc.textContent = meta.desc;
-    card.appendChild(desc);
-
-    const stats = document.createElement("div");
-    stats.className = "module-card-stats";
-    stats.innerHTML = `
-      <span>failure=${failureCount}</span>
-      <span>selected=${String(healthItem?.selected_ref || ref || "-")}</span>
-    `;
-    card.appendChild(stats);
-
-    if (overlayItems.length) {
-      const signals = document.createElement("div");
-      signals.className = "module-card-signals";
-      overlayItems.slice(0, 3).forEach((item) => {
-        const chip = document.createElement("span");
-        chip.className = "signal-chip";
-        chip.textContent = `${item.name} · ${item.count}`;
-        signals.appendChild(chip);
-      });
-      card.appendChild(signals);
-    }
-
-    const errorText = String(healthItem?.last_error || "").trim();
-    if (errorText) {
-      const errorNode = document.createElement("div");
-      errorNode.className = "module-card-error";
-      errorNode.textContent = `last_error: ${errorText}`;
-      card.appendChild(errorNode);
-    }
-
-    moduleBay.appendChild(card);
+    return {
+      title: meta.title,
+      key,
+      ref: String(ref || "-"),
+      description: meta.desc,
+      stats: [
+        `status=${status}`,
+        `failure=${failureCount}`,
+        `selected=${String(healthItem?.selected_ref || ref || "-")}`,
+      ],
+      signals: overlayItems.slice(0, 3).map((item) => `${item.name} · ${item.count}`),
+      error: String(healthItem?.last_error || "").trim(),
+      status,
+    };
   });
+
+  const groups = [
+    {
+      title: "Agent Modules",
+      meta: "会思考、会规划、会驱动内部多 agent 流程。",
+      items: agentModules.map((item) => ({
+        kind: "Agent",
+        primary: primaryIds.has(item?.module_id),
+        badge: "AGENT",
+        card: {
+          title: String(item?.title || "Agent Module"),
+          module_id: String(item?.module_id || "-"),
+          description: String(item?.description || "未填写描述。"),
+          stats: [`roles=${Array.isArray(item?.roles) ? item.roles.length : 0}`, `profiles=${Array.isArray(item?.profiles) ? item.profiles.length : 0}`],
+          signals: Array.isArray(item?.profiles) ? item.profiles : [],
+        },
+      })),
+    },
+    {
+      title: "Tool Modules",
+      meta: "动作能力分舱。后续继续把执行器物理拆开。",
+      items: toolModules.map((item) => ({
+        kind: "Tool",
+        primary: primaryIds.has(item?.module_id),
+        badge: "TOOL",
+        card: {
+          title: String(item?.title || "Tool Module"),
+          module_id: String(item?.module_id || "-"),
+          description: String(item?.description || "未填写描述。"),
+          stats: [`tools=${Array.isArray(item?.tool_names) ? item.tool_names.length : 0}`],
+          signals: Array.isArray(item?.tool_names) ? item.tool_names.slice(0, 5) : [],
+        },
+      })),
+    },
+    {
+      title: "Output & Memory",
+      meta: "输出收口与长期个体覆层。",
+      items: [
+        ...outputModules.map((item) => ({
+          kind: "Output",
+          primary: primaryIds.has(item?.module_id),
+          badge: "OUTPUT",
+          card: {
+            title: String(item?.title || "Output Module"),
+            module_id: String(item?.module_id || "-"),
+            description: String(item?.description || "未填写描述。"),
+            stats: [`outputs=${Array.isArray(item?.output_kinds) ? item.output_kinds.length : 0}`],
+            signals: Array.isArray(item?.output_kinds) ? item.output_kinds : [],
+          },
+        })),
+        ...memoryModules.map((item) => ({
+          kind: "Memory",
+          primary: primaryIds.has(item?.module_id),
+          badge: "MEMORY",
+          card: {
+            title: String(item?.title || "Memory Module"),
+            module_id: String(item?.module_id || "-"),
+            description: String(item?.description || "未填写描述。"),
+            stats: [`signals=${Array.isArray(item?.signal_kinds) ? item.signal_kinds.length : 0}`],
+            signals: Array.isArray(item?.signal_kinds) ? item.signal_kinds : [],
+          },
+        })),
+      ],
+    },
+    {
+      title: "Kernel Support",
+      meta: "主核级支撑模块，负责路由、策略、provider、registry 与降级。",
+      items: supportEntries.map((item) => ({
+        kind: "Support",
+        primary: false,
+        badge: "SUPPORT",
+        status: item.status,
+        support: true,
+        card: {
+          title: item.title,
+          module_id: item.key,
+          ref: item.ref,
+          description: item.description,
+          stats: item.stats,
+          signals: item.signals,
+          error: item.error,
+        },
+      })),
+    },
+  ];
+
+  groups
+    .filter((group) => Array.isArray(group.items) && group.items.length)
+    .forEach((group) => {
+      const section = document.createElement("section");
+      section.className = "module-group";
+
+      const head = document.createElement("div");
+      head.className = "module-group-head";
+      head.innerHTML = `
+        <div class="module-group-title">${group.title}</div>
+        <div class="module-group-meta">${group.meta}</div>
+      `;
+      section.appendChild(head);
+
+      const grid = document.createElement("div");
+      grid.className = "module-group-grid";
+      group.items.forEach((item) => {
+        grid.appendChild(
+          buildModuleCard(item.card, {
+            primary: item.primary,
+            badge: item.badge,
+            status: item.status,
+            support: item.support,
+          })
+        );
+      });
+      section.appendChild(grid);
+      moduleBay.appendChild(section);
+    });
 }
 
 function renderEvolutionFeed(events = []) {
@@ -1679,38 +1801,47 @@ function renderKernelConsole(health = {}) {
   const toolRegistry = health?.kernel_tool_registry || {};
   const authMode = String(health?.auth_mode || "").trim() || "unknown";
   const turnCount = Number(overlay?.turns_observed || 0);
+  const capabilityCount =
+    (Array.isArray(hostRuntime?.agent_modules) ? hostRuntime.agent_modules.length : 0) +
+    (Array.isArray(hostRuntime?.tool_modules) ? hostRuntime.tool_modules.length : 0) +
+    (Array.isArray(hostRuntime?.output_modules) ? hostRuntime.output_modules.length : 0) +
+    (Array.isArray(hostRuntime?.memory_modules) ? hostRuntime.memory_modules.length : 0);
 
   if (kernelLiveLabel) {
     kernelLiveLabel.textContent = Object.keys(selected).length ? "主核在线" : "主核待机";
   }
   if (kernelLiveMeta) {
     kernelLiveMeta.textContent =
-      `modules=${Object.keys(selected).length} · auth=${authMode} · overlay_turns=${turnCount}`;
+      `agent=${String(primaryAgent?.module_id || "-")} · tool=${String(primaryTool?.module_id || "-")} · blackboard=${String(blackboard?.status || "idle")}`;
   }
 
+  renderSystemFlow(health);
+
   renderKernelStatGrid(kernelCoreMetrics, [
-    { label: "Active Manifest", value: String(health?.build_version || "runtime"), meta: `${Object.keys(selected).length} modules live` },
-    { label: "Provider", value: authMode, meta: `${Number(toolRegistry?.tool_count || 0)} tools registered` },
-    { label: "Agent Module", value: String(primaryAgent?.module_id || "-"), meta: String(primaryAgent?.title || "未装载") },
-    { label: "Tool Module", value: String(primaryTool?.module_id || "-"), meta: String(primaryTool?.title || "未装载") },
-    { label: "Output Module", value: String(primaryOutput?.module_id || "-"), meta: String(primaryOutput?.title || "未装载") },
-    { label: "Memory Module", value: String(primaryMemory?.module_id || "-"), meta: String(primaryMemory?.title || "未装载") },
+    { label: "Host State", value: String(Object.keys(selected).length ? "ONLINE" : "IDLE"), meta: `build=${String(health?.build_version || "runtime")}` },
+    { label: "Capability Bundles", value: String((hostRuntime?.loaded_capability_bundles || []).length || 0), meta: (hostRuntime?.loaded_capability_bundles || []).join(", ") || "none" },
+    { label: "Primary Agent", value: String(primaryAgent?.module_id || "-"), meta: String(primaryAgent?.title || "未装载") },
+    { label: "Primary Tool Bus", value: String(primaryTool?.module_id || "-"), meta: `${Number(toolRegistry?.tool_count || 0)} tools registered` },
+    { label: "Primary Output", value: String(primaryOutput?.module_id || "-"), meta: String(primaryOutput?.title || "未装载") },
+    { label: "Primary Memory", value: String(primaryMemory?.module_id || "-"), meta: `${capabilityCount} capability modules` },
   ]);
 
   renderKernelStatGrid(shadowLabMetrics, [
-    { label: "Validate", value: validation?.ok ? "PASS" : "CHECK", meta: String(validation?.reason || validation?.detail || "shadow validation") },
-    { label: "Promote Gate", value: promoteCheck?.ok ? "OPEN" : "HOLD", meta: String(promoteCheck?.reason || "compatibility gate") },
-    { label: "Last Upgrade", value: String(lastUpgrade?.run_id || "-").slice(0, 12) || "-", meta: formatRelativeTime(lastUpgrade?.finished_at || lastUpgrade?.started_at) },
-    { label: "Patch Worker", value: String(lastPatch?.stop_reason || (lastPatch?.ok ? "pipeline_ok" : "-")), meta: `rounds=${Number(lastPatch?.round_count || 0)}` },
-    { label: "Repair", value: String(lastRepair?.strategy || "-"), meta: formatRelativeTime(lastRepair?.finished_at) },
-    { label: "Package", value: String(lastPackage?.run_id || "-").slice(0, 12) || "-", meta: formatRelativeTime(lastPackage?.finished_at) },
+    { label: "Status", value: String(blackboard?.status || "idle").toUpperCase(), meta: String(blackboard?.request_id || "waiting") },
+    { label: "Agent Slot", value: String(blackboard?.selected_agent_module_id || "-"), meta: String(blackboard?.selected_capability_modules?.join(", ") || "no request yet") },
+    { label: "Tool Slot", value: String(blackboard?.selected_tool_module_id || "-"), meta: `events=${Number(blackboard?.tool_event_count || 0)}` },
+    { label: "Output Slot", value: String(blackboard?.selected_output_module_id || "-"), meta: String(blackboard?.selected_memory_module_id || "memory=-") },
+    { label: "Plan", value: String((blackboard?.execution_plan || []).length || 0), meta: String((blackboard?.execution_plan || [])[0] || "暂无执行计划") },
+    { label: "Last Error", value: String(blackboard?.last_error ? "YES" : "NO"), meta: String(blackboard?.last_error || blackboard?.answer_bundle_summary || "暂无错误，等待输出摘要") },
   ]);
 
   renderKernelStatGrid(evolutionMetrics, [
-    { label: "Turns Observed", value: String(turnCount), meta: `updated=${formatRelativeTime(overlay?.updated_at)}` },
+    { label: "Validate", value: validation?.ok ? "PASS" : "CHECK", meta: String(validation?.reason || validation?.detail || "shadow validation") },
+    { label: "Promote Gate", value: promoteCheck?.ok ? "OPEN" : "HOLD", meta: String(promoteCheck?.reason || "compatibility gate") },
+    { label: "Overlay Turns", value: String(turnCount), meta: `updated=${formatRelativeTime(overlay?.updated_at)}` },
     { label: "Top Terms", value: pickTopCounterName(overlay?.domain_terms || [], "none"), meta: "长期对话累积的领域词" },
-    { label: "Finalizer Bias", value: pickTopCounterName(overlay?.module_affinity?.finalizer || [], "none"), meta: `style=${pickTopCounterName(overlay?.response_style_counts || [], "normal")}` },
-    { label: "Blackboard", value: String(blackboard?.status || "-").toUpperCase(), meta: String(blackboard?.selected_agent_module_id || blackboard?.selected_tool_module_id || "暂无黑板状态") },
+    { label: "Patch Worker", value: String(lastPatch?.stop_reason || (lastPatch?.ok ? "pipeline_ok" : "-")), meta: `rounds=${Number(lastPatch?.round_count || 0)}` },
+    { label: "Last Upgrade", value: String(lastUpgrade?.run_id || "-").slice(0, 12) || "-", meta: formatRelativeTime(lastUpgrade?.finished_at || lastUpgrade?.started_at) },
   ]);
 
   renderModuleBay(health);
