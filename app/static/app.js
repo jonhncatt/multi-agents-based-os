@@ -1348,11 +1348,12 @@ function toBadgeClass(value) {
 function buildModuleCard(item, options = {}) {
   const node = document.createElement("article");
   const isPrimary = Boolean(options?.primary);
+  const isActive = Boolean(options?.active);
   const isSupport = Boolean(options?.support);
   const badgeLabel = String(options?.badge || item?.kind || "MODULE");
   const badgeClass = toBadgeClass(badgeLabel);
   const status = String(options?.status || "active").trim().toLowerCase() || "active";
-  node.className = `module-card status-${status}${isPrimary ? " is-primary" : ""}${isSupport ? " support-card" : ""}`;
+  node.className = `module-card status-${status}${isPrimary ? " is-primary" : ""}${isActive ? " is-active" : ""}${isSupport ? " support-card" : ""}`;
   node.innerHTML = `
     <div class="module-card-head">
       <div>
@@ -1368,6 +1369,7 @@ function buildModuleCard(item, options = {}) {
     <div class="module-card-signals">
       ${(Array.isArray(item?.signals) ? item.signals : []).map((signal) => `<span class="signal-chip">${String(signal)}</span>`).join("")}
       ${isPrimary ? `<span class="signal-chip primary-chip">primary</span>` : ""}
+      ${isActive ? `<span class="signal-chip active-chip">active</span>` : ""}
     </div>
     ${String(item?.error || "").trim() ? `<div class="module-card-error">${String(item.error).trim()}</div>` : ""}
   `;
@@ -1378,13 +1380,14 @@ function renderSystemFlow(health = {}) {
   if (!systemFlowRibbon) return;
   const hostRuntime = health?.kernel_host_runtime || {};
   const blackboard = hostRuntime?.blackboard || {};
+  const activeModules = Array.isArray(blackboard?.active_module_ids) ? blackboard.active_module_ids : [];
   const flowItems = [
     { label: "KernelHost", value: "host", meta: String(blackboard?.status || "idle").trim() || "idle", tone: "host" },
     { label: "AgentModule", value: String(hostRuntime?.primary_agent_module?.module_id || "-"), meta: String(hostRuntime?.primary_agent_module?.title || "未装载"), tone: "agent" },
     { label: "ToolModule", value: String(hostRuntime?.primary_tool_module?.module_id || "-"), meta: String(hostRuntime?.primary_tool_module?.title || "未装载"), tone: "tool" },
     { label: "OutputModule", value: String(hostRuntime?.primary_output_module?.module_id || "-"), meta: String(hostRuntime?.primary_output_module?.title || "未装载"), tone: "output" },
     { label: "MemoryModule", value: String(hostRuntime?.primary_memory_module?.module_id || "-"), meta: String(hostRuntime?.primary_memory_module?.title || "未装载"), tone: "memory" },
-    { label: "Blackboard", value: String(blackboard?.request_id || "waiting").slice(0, 16), meta: String(blackboard?.selected_agent_module_id || "等待请求"), tone: "blackboard" },
+    { label: "Blackboard", value: String(blackboard?.request_id || "waiting").slice(0, 16), meta: activeModules.length ? `${activeModules.length} active modules` : String(blackboard?.selected_agent_module_id || "等待请求"), tone: "blackboard" },
   ];
 
   systemFlowRibbon.innerHTML = "";
@@ -1406,6 +1409,7 @@ function renderModuleBay(health = {}) {
   const moduleHealth = health?.kernel_module_health || {};
   const hostRuntime = health?.kernel_host_runtime || {};
   const blackboard = hostRuntime?.blackboard || {};
+  const activeIds = new Set(Array.isArray(blackboard?.active_module_ids) ? blackboard.active_module_ids : []);
   const toolModuleUsage = blackboard?.tool_module_usage || {};
   const agentModules = Array.isArray(hostRuntime?.agent_modules) ? hostRuntime.agent_modules : [];
   const toolModules = Array.isArray(hostRuntime?.tool_modules) ? hostRuntime.tool_modules : [];
@@ -1464,6 +1468,7 @@ function renderModuleBay(health = {}) {
       items: agentModules.map((item) => ({
         kind: "Agent",
         primary: primaryIds.has(item?.module_id),
+        active: activeIds.has(item?.module_id),
         badge: "AGENT",
         card: {
           title: String(item?.title || "Agent Module"),
@@ -1480,6 +1485,7 @@ function renderModuleBay(health = {}) {
       items: toolModules.map((item) => ({
         kind: "Tool",
         primary: primaryIds.has(item?.module_id),
+        active: activeIds.has(item?.module_id),
         badge: "TOOL",
         card: {
           title: String(item?.title || "Tool Module"),
@@ -1500,6 +1506,7 @@ function renderModuleBay(health = {}) {
         ...outputModules.map((item) => ({
           kind: "Output",
           primary: primaryIds.has(item?.module_id),
+          active: activeIds.has(item?.module_id),
           badge: "OUTPUT",
           card: {
             title: String(item?.title || "Output Module"),
@@ -1512,6 +1519,7 @@ function renderModuleBay(health = {}) {
         ...memoryModules.map((item) => ({
           kind: "Memory",
           primary: primaryIds.has(item?.module_id),
+          active: activeIds.has(item?.module_id),
           badge: "MEMORY",
           card: {
             title: String(item?.title || "Memory Module"),
@@ -1565,6 +1573,7 @@ function renderModuleBay(health = {}) {
         grid.appendChild(
           buildModuleCard(item.card, {
             primary: item.primary,
+            active: item.active,
             badge: item.badge,
             status: item.status,
             support: item.support,
@@ -1797,6 +1806,7 @@ function renderKernelConsole(health = {}) {
   const blackboard = hostRuntime?.blackboard || {};
   const toolUsage = blackboard?.tool_usage || {};
   const toolModuleUsage = blackboard?.tool_module_usage || {};
+  const activeModules = Array.isArray(blackboard?.active_module_ids) ? blackboard.active_module_ids : [];
   const overlay = health?.assistant_overlay_profile || {};
   const recentEvents = health?.assistant_evolution_recent || [];
   const validation = health?.kernel_shadow_validation || {};
@@ -1843,6 +1853,7 @@ function renderKernelConsole(health = {}) {
     { label: "Tool Slot", value: String(blackboard?.selected_tool_module_id || "-"), meta: `events=${Number(blackboard?.tool_event_count || 0)} · top=${topToolModule}` },
     { label: "Output Slot", value: String(blackboard?.selected_output_module_id || "-"), meta: `${String(blackboard?.selected_memory_module_id || "memory=-")} · tool=${topTool}` },
     { label: "Plan", value: String((blackboard?.execution_plan || []).length || 0), meta: String((blackboard?.execution_plan || [])[0] || "暂无执行计划") },
+    { label: "Active Modules", value: String(activeModules.length || 0), meta: activeModules.slice(0, 3).join(", ") || "等待模块激活" },
     { label: "Last Error", value: String(blackboard?.last_error ? "YES" : "NO"), meta: String(blackboard?.last_error || blackboard?.answer_bundle_summary || "暂无错误，等待输出摘要") },
   ]);
 

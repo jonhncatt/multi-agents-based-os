@@ -29,6 +29,7 @@ class Blackboard:
     selected_output_module_id: str = ""
     selected_memory_module_id: str = ""
     selected_capability_modules: list[str] = field(default_factory=list)
+    active_module_ids: list[str] = field(default_factory=list)
     status: str = "created"
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
@@ -57,7 +58,7 @@ class Blackboard:
         selected_memory_module_id: str = "",
         selected_capability_modules: list[str] | None = None,
     ) -> "Blackboard":
-        return cls(
+        board = cls(
             request_id=f"bb-{uuid4().hex[:12]}",
             session_id=str(session_id or "").strip(),
             user_message=str(user_message or ""),
@@ -70,6 +71,15 @@ class Blackboard:
                 str(item or "").strip() for item in (selected_capability_modules or []) if str(item or "").strip()
             ],
         )
+        board.set_active_modules(
+            [
+                board.selected_agent_module_id,
+                board.selected_tool_module_id,
+                board.selected_output_module_id,
+                board.selected_memory_module_id,
+            ]
+        )
+        return board
 
     def touch(self) -> None:
         self.updated_at = _now_iso()
@@ -86,6 +96,23 @@ class Blackboard:
         self.execution_plan = [str(item or "") for item in (execution_plan or []) if str(item or "").strip()]
         self.touch()
 
+    def set_active_modules(self, module_ids: list[str] | None, *, reason: str = "") -> None:
+        normalized = []
+        seen: set[str] = set()
+        for item in module_ids or []:
+            value = str(item or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        if normalized == self.active_module_ids:
+            return
+        self.active_module_ids = normalized
+        if reason:
+            self.add_event("active_modules_updated", reason, active_modules=list(self.active_module_ids))
+        else:
+            self.touch()
+
     def record_tool_event(self, event: Any) -> None:
         name = str(getattr(event, "name", "") or "").strip()
         module_id = str(getattr(event, "module_id", "") or "").strip()
@@ -93,6 +120,12 @@ class Blackboard:
             self.tool_usage[name] = int(self.tool_usage.get(name) or 0) + 1
         if module_id:
             self.tool_module_usage[module_id] = int(self.tool_module_usage.get(module_id) or 0) + 1
+            self.set_active_modules(
+                [
+                    *self.active_module_ids,
+                    module_id,
+                ]
+            )
         self.tool_event_count = sum(int(value or 0) for value in self.tool_usage.values())
         self.touch()
 
@@ -146,6 +179,7 @@ class Blackboard:
             "selected_output_module_id": self.selected_output_module_id,
             "selected_memory_module_id": self.selected_memory_module_id,
             "selected_capability_modules": list(self.selected_capability_modules),
+            "active_module_ids": list(self.active_module_ids),
             "effective_model": self.effective_model,
             "route_state": dict(self.route_state),
             "execution_plan": list(self.execution_plan),

@@ -625,6 +625,12 @@ class OfficeAgent:
         self._selected_tool_module_id = str(
             selected_tool_module_id or self._capability_runtime.metadata.get("primary_tool_module") or ""
         ).strip()
+        self._selected_output_module_id = str(
+            self._capability_runtime.metadata.get("primary_output_module") or ""
+        ).strip()
+        self._selected_memory_module_id = str(
+            self._capability_runtime.metadata.get("primary_memory_module") or ""
+        ).strip()
         self.tools = tool_executor or self._capability_runtime.tools
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
@@ -1452,6 +1458,22 @@ class OfficeAgent:
                 blackboard.record_tool_event(event)
             emit_progress("tool_event", item=event.model_dump())
 
+        def sync_blackboard_state(*, reason: str = "") -> None:
+            if blackboard is None:
+                return
+            blackboard.set_route_state(route)
+            blackboard.set_execution_plan(execution_plan)
+            blackboard.set_active_modules(
+                [
+                    self._selected_agent_module_id,
+                    self._selected_tool_module_id,
+                    self._selected_output_module_id,
+                    self._selected_memory_module_id,
+                    *list((blackboard.tool_module_usage or {}).keys()),
+                ],
+                reason=reason,
+            )
+
         def emit_agent_state() -> None:
             emit_progress(
                 "agent_state",
@@ -1924,6 +1946,7 @@ class OfficeAgent:
             add_trace=add_trace,
             add_debug=add_debug,
         )
+        sync_blackboard_state(reason="route_resolved")
         run_state = RunState.create(
             run_id=f"run_{int(time.time() * 1000)}_{os.getpid()}",
             session_id=str(session_id or ""),
@@ -1967,6 +1990,7 @@ class OfficeAgent:
             settings=settings,
             route=route,
         )
+        sync_blackboard_state(reason="execution_plan_initialized")
         add_trace(
             "Router 分诊完成: "
             f"task_type={route.get('task_type')}, complexity={route.get('complexity')}, source={route.get('source')}。"
@@ -2084,6 +2108,7 @@ class OfficeAgent:
             planner_plan = self._normalize_string_list(planner_result.payload.get("plan") or [], limit=8, item_limit=160)
             if planner_plan:
                 execution_plan[:] = planner_plan
+                sync_blackboard_state(reason="planner_plan_updated")
             planner_summary = planner_result.summary or "已生成目标摘要。"
             planner_bullets = (
                 self._normalize_string_list(planner_result.payload.get("constraints") or [], limit=3, item_limit=180)
@@ -2103,6 +2128,7 @@ class OfficeAgent:
             planner_execution_plan = planner_hook["execution_plan"]
             if planner_execution_plan:
                 execution_plan[:] = planner_execution_plan
+                sync_blackboard_state(reason="planner_hook_plan_updated")
             self._apply_pipeline_hook_effects(
                 hook_payload=planner_hook,
                 messages=messages,
@@ -2603,6 +2629,7 @@ class OfficeAgent:
                     settings=settings,
                     route=route,
                 )
+                sync_blackboard_state(reason="tool_mode_escalated_from_bare_tool_call")
                 add_panel(
                     "router",
                     "Router",
@@ -2710,6 +2737,7 @@ class OfficeAgent:
                         settings=settings,
                         route=route,
                     )
+                    sync_blackboard_state(reason="tool_mode_escalated_from_worker_request")
                     add_panel(
                         "router",
                         "Router",
@@ -2988,6 +3016,7 @@ class OfficeAgent:
                                 settings=settings,
                                 route=route,
                             )
+                            sync_blackboard_state(reason="tool_mode_escalated_from_permission_gate")
                             add_panel(
                                 "router",
                                 "Router",
