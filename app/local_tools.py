@@ -19,7 +19,7 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
-from app.config import AppConfig
+from app.config import AppConfig, get_access_roots
 from app.document_text import (
     build_pdf_document_index,
     clear_pdf_cache_for_path,
@@ -61,7 +61,7 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
     if normalized:
         # High-priority alias mapping, e.g. "workbench/a.txt" -> "<allowed_root_named_workbench>/a.txt"
         # Also support short aliases from allowed root tails, e.g. "master/source" -> "<...>/master/source".
-        for root in config.allowed_roots:
+        for root in get_access_roots(config):
             root_norm = str(root).replace("\\", "/").rstrip("/").lower()
             if normalized == root_norm or normalized == root.name.lower():
                 add(root)
@@ -95,7 +95,7 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
 
     # Default mapping keeps backward compatibility.
     add(config.workspace_root / path)
-    for root in config.allowed_roots:
+    for root in get_access_roots(config):
         if root == config.workspace_root:
             continue
         add(root / path)
@@ -115,25 +115,25 @@ def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
 
     # Prefer existing paths in allowed roots for better UX with relative inputs.
     for path in candidates:
-        for root in config.allowed_roots:
+        for root in get_access_roots(config):
             if _is_within(path, root) and path.exists():
                 return path
 
     # Fall back to first allowed candidate even if it does not exist,
     # prefer a candidate whose parent directory exists.
     for path in candidates:
-        for root in config.allowed_roots:
+        for root in get_access_roots(config):
             if _is_within(path, root) and path.parent.exists():
                 return path
 
     # Last resort: return first allowed candidate even if parent does not exist,
     # so upper layers can return a clear "not found" error.
-    for root in config.allowed_roots:
+    for root in get_access_roots(config):
         for path in candidates:
             if _is_within(path, root):
                 return path
 
-    allowed = ", ".join(str(p) for p in config.allowed_roots)
+    allowed = ", ".join(str(p) for p in get_access_roots(config))
     raise ValueError(f"Path out of allowed roots: {raw_path}. Allowed roots: {allowed}")
 
 
@@ -170,7 +170,7 @@ def _resolve_source_path(config: AppConfig, raw_path: str) -> Path:
 
     for match in matches:
         candidate = match.resolve()
-        for root in config.allowed_roots:
+        for root in get_access_roots(config):
             if _is_within(candidate, root):
                 return candidate
     return resolved
@@ -1030,7 +1030,7 @@ class LocalToolExecutor:
         self._web_cache_dir.mkdir(parents=True, exist_ok=True)
         self._docker_sandbox = DockerSandboxManager(
             workspace_root=config.workspace_root,
-            allowed_roots=config.allowed_roots,
+            allowed_roots=get_access_roots(config),
             docker_bin=config.docker_bin,
             image=config.docker_image,
             network=config.docker_network,

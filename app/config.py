@@ -97,6 +97,8 @@ class AppConfig:
     shadow_logs_dir: Path
     token_stats_path: Path
     allowed_roots: list[Path]
+    workspace_sibling_root: Path | None
+    allow_workspace_sibling_access: bool
     default_extra_allowed_roots: list[Path]
     extra_allowed_roots_source: str
     platform_name: str
@@ -223,6 +225,26 @@ def _default_extra_allowed_roots_for_platform(home: Path) -> tuple[str, list[Pat
         seen.add(key)
         deduped.append(root)
     return platform_name, deduped
+
+
+def get_access_roots(config: AppConfig) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        key = str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(path)
+
+    for root in config.allowed_roots:
+        add(root)
+    if config.allow_workspace_sibling_access:
+        add(config.workspace_sibling_root)
+    return roots
 
 
 def load_config() -> AppConfig:
@@ -463,6 +485,20 @@ def load_config() -> AppConfig:
 
     allow_any_raw = (_env("OFFICETOOL_ALLOW_ANY_PATH", "OFFCIATOOL_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
     allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
+    sibling_access_raw = (
+        _env(
+            "OFFICETOOL_ALLOW_WORKSPACE_SIBLING_ACCESS",
+            "OFFCIATOOL_ALLOW_WORKSPACE_SIBLING_ACCESS",
+            default="true",
+        )
+        or "true"
+    ).strip().lower()
+    allow_workspace_sibling_access = sibling_access_raw in {"1", "true", "yes", "on"}
+    workspace_sibling_root: Path | None = None
+    if allow_workspace_sibling_access:
+        parent_root = workspace_root.parent.resolve()
+        if parent_root != workspace_root:
+            workspace_sibling_root = parent_root
 
     platform_name, default_extra_root_paths = _default_extra_allowed_roots_for_platform(Path.home())
     default_extra_roots = [str(path) for path in default_extra_root_paths]
@@ -633,6 +669,8 @@ def load_config() -> AppConfig:
         shadow_logs_dir=shadow_logs_dir,
         token_stats_path=token_stats_path,
         allowed_roots=allowed_roots,
+        workspace_sibling_root=workspace_sibling_root,
+        allow_workspace_sibling_access=allow_workspace_sibling_access,
         default_extra_allowed_roots=default_extra_root_paths,
         extra_allowed_roots_source=extra_allowed_roots_source,
         platform_name=platform_name,

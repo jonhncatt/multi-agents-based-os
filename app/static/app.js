@@ -1206,6 +1206,8 @@ function renderBackendPolicy(health = {}) {
   const platformName = String(health.platform_name || "Unknown").trim();
   const workspaceRoot = String(health.workspace_root || "").trim() || "(unknown)";
   const allowedRoots = Array.isArray(health.allowed_roots) ? health.allowed_roots : [];
+  const siblingRoot = String(health.workspace_sibling_root || "").trim();
+  const allowSiblingAccess = Boolean(health.allow_workspace_sibling_access) && Boolean(siblingRoot);
   const defaultExtraRoots = Array.isArray(health.default_extra_allowed_roots) ? health.default_extra_allowed_roots : [];
   const source = String(health.extra_allowed_roots_source || "platform_default").trim().toLowerCase();
   const sourceLabel = source === "env_override" ? "环境变量覆盖" : "平台默认";
@@ -1213,6 +1215,7 @@ function renderBackendPolicy(health = {}) {
   const lines = [
     `平台: ${platformName}`,
     `路径策略: ${allowAnyPath ? "不限制（ALLOW_ANY_PATH）" : "只允许已配置根目录"}`,
+    `同级工程访问: ${allowSiblingAccess ? `允许（根=${siblingRoot}）` : "关闭"}`,
     `额外根目录来源: ${sourceLabel}`,
     `工作区根目录: ${workspaceRoot}`,
     "当前允许读取根目录:",

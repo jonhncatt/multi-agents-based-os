@@ -228,6 +228,8 @@ class HealthResponse(BaseModel):
     workspace_root: str = ""
     allow_any_path: bool = False
     allowed_roots: list[str] = Field(default_factory=list)
+    workspace_sibling_root: str = ""
+    allow_workspace_sibling_access: bool = False
     default_extra_allowed_roots: list[str] = Field(default_factory=list)
     extra_allowed_roots_source: Literal["platform_default", "env_override"] | str = "platform_default"
     web_allow_all_domains: bool = True

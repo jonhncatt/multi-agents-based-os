@@ -259,6 +259,8 @@ def health() -> HealthResponse:
         workspace_root=str(config.workspace_root),
         allow_any_path=config.allow_any_path,
         allowed_roots=[str(path) for path in config.allowed_roots],
+        workspace_sibling_root=str(config.workspace_sibling_root or ""),
+        allow_workspace_sibling_access=config.allow_workspace_sibling_access,
         default_extra_allowed_roots=[str(path) for path in config.default_extra_allowed_roots],
         extra_allowed_roots_source=config.extra_allowed_roots_source,
         web_allow_all_domains=config.web_allow_all_domains,

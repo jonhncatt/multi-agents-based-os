@@ -78,7 +78,7 @@ from packages.office_modules.specialist_role import (
     specialist_fallback as specialist_fallback_helper,
 )
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
-from app.config import AppConfig
+from app.config import AppConfig, get_access_roots
 from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
 from app.core.bootstrap import KernelRuntime, build_kernel_runtime
 from app.core.kernel_debug_support import (
@@ -1389,7 +1389,7 @@ class OfficeAgent:
         managed_role_executions: dict[str, RoleExecution] = {}
         coordinator_node_id = ""
         coordinator_instance_id = ""
-        allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
+        allowed_roots_text = ", ".join(str(p) for p in get_access_roots(self.config))
         session_tools_hint = (
             "当用户提到“之前/上次会话里说过什么”时，可调用 list_sessions 和 read_session_history 主动检索历史，不要先让用户手工找 session_id。\n"
             if self.config.enable_session_tools
@@ -8502,7 +8502,7 @@ class OfficeAgent:
             and bool(str(query or "").strip())
         ):
             searched_roots: list[str] = [str((result or {}).get("root") or base_root)]
-            for candidate in self.config.allowed_roots:
+            for candidate in get_access_roots(self.config):
                 candidate_root = str(candidate)
                 if candidate_root in searched_roots:
                     continue
