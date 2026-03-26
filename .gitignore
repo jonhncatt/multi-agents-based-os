@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 .env
 output/
+artifacts/
 tmp/
 .playwright-cli/
 app/data/sessions/*

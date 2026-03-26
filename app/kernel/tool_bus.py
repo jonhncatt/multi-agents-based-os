@@ -21,69 +21,95 @@ class ToolBus:
     def execute(self, call: ToolCall) -> ToolResult:
         normalized_call = replace(call, name=str(call.name or "").strip())
         if not normalized_call.name:
+            return ToolResult(ok=False, tool_name="", provider_id="", error="tool name is required", attempts=1)
+
+        contract = self.registry.get_tool_contract(normalized_call.name)
+        timeout = float(normalized_call.timeout_sec) if normalized_call.timeout_sec is not None else float(getattr(contract, "timeout", 0.0) or 0.0)
+        retries = max(0, int(normalized_call.retries) if normalized_call.retries else int((getattr(contract, "retry_policy", {}) or {}).get("max_retries", 0) or 0))
+        prepared_call = replace(normalized_call, timeout_sec=timeout, retries=retries)
+
+        providers = self.registry.providers_for_tool(prepared_call.name)
+        if not providers:
             return ToolResult(
                 ok=False,
-                tool_name="",
+                tool_name=prepared_call.name,
                 provider_id="",
-                error="tool name is required",
-                attempts=1,
-            )
-        provider = self.registry.provider_for_tool(normalized_call.name)
-        if provider is None:
-            return ToolResult(
-                ok=False,
-                tool_name=normalized_call.name,
-                provider_id="",
-                error=f"no provider registered for tool: {normalized_call.name}",
+                error=f"no provider registered for tool: {prepared_call.name}",
                 attempts=1,
             )
 
-        attempts = max(1, int(normalized_call.retries) + 1)
-        last_result = ToolResult(
-            ok=False,
-            tool_name=normalized_call.name,
-            provider_id=provider.provider_id,
-            error="tool execution did not start",
-            attempts=1,
-        )
+        primary_result = self._execute_provider_chain(prepared_call, providers)
+        if primary_result.ok:
+            return primary_result
+
+        fallback_tools = [str(item or "").strip() for item in prepared_call.fallback_tools if str(item or "").strip()]
+        last_result = primary_result
+        for fallback_name in fallback_tools:
+            fallback_providers = self.registry.providers_for_tool(fallback_name)
+            if not fallback_providers:
+                continue
+            fallback_call = replace(
+                prepared_call,
+                name=fallback_name,
+                fallback_tools=[],
+                metadata={**dict(prepared_call.metadata), "fallback_for": prepared_call.name},
+            )
+            fallback_result = self._execute_provider_chain(fallback_call, fallback_providers, mark_fallback=True)
+            last_result = fallback_result
+            if fallback_result.ok:
+                return fallback_result
+        return last_result
+
+    def _execute_provider_chain(
+        self,
+        call: ToolCall,
+        providers: list[BaseToolProvider],
+        *,
+        mark_fallback: bool = False,
+    ) -> ToolResult:
+        last_result = ToolResult(ok=False, tool_name=call.name, provider_id="", error="tool execution did not start", attempts=1)
+        for index, provider in enumerate(providers):
+            result = self._execute_with_retries(provider, call)
+            if result.ok:
+                if mark_fallback or index > 0:
+                    result.fallback_used = True
+                    self._publish(
+                        "tool_fallback",
+                        {
+                            "tool": call.name,
+                            "provider_id": provider.provider_id,
+                            "fallback_used": True,
+                        },
+                    )
+                return result
+            last_result = result
+        return last_result
+
+    def _execute_with_retries(self, provider: BaseToolProvider, call: ToolCall) -> ToolResult:
+        attempts = max(1, int(call.retries) + 1)
+        last_result = ToolResult(ok=False, tool_name=call.name, provider_id=provider.provider_id, error="tool execution did not start", attempts=1)
         for attempt in range(1, attempts + 1):
-            result = self._execute_once(provider, normalized_call, attempt=attempt)
+            result = self._execute_once(provider, call, attempt=attempt)
             last_result = result
             if result.ok:
                 return result
-
-        fallback_tools = [str(item or "").strip() for item in normalized_call.fallback_tools if str(item or "").strip()]
-        for fallback_name in fallback_tools:
-            fallback_provider = self.registry.provider_for_tool(fallback_name)
-            if fallback_provider is None:
-                continue
-            fallback_call = ToolCall(
-                name=fallback_name,
-                arguments=dict(normalized_call.arguments),
-                timeout_sec=normalized_call.timeout_sec,
-                retries=max(0, normalized_call.retries),
-                fallback_tools=[],
-                metadata={**dict(normalized_call.metadata), "fallback_for": normalized_call.name},
-            )
-            fallback_result = self._execute_once(fallback_provider, fallback_call, attempt=1)
-            if fallback_result.ok:
-                fallback_result.fallback_used = True
-                return fallback_result
-            last_result = fallback_result
-
         return last_result
 
     def _execute_once(self, provider: BaseToolProvider, call: ToolCall, *, attempt: int) -> ToolResult:
         timeout = float(call.timeout_sec) if call.timeout_sec else 0.0
         timeout = max(0.0, timeout)
+        provider_state = self.registry.providers.state(provider.provider_id)
+        if provider_state.status == "disabled" or provider_state.circuit_open:
+            message = f"provider unavailable: {provider.provider_id}"
+            self._publish(
+                "provider_skipped",
+                {"provider_id": provider.provider_id, "tool": call.name, "reason": message},
+            )
+            return ToolResult(ok=False, tool_name=call.name, provider_id=provider.provider_id, error=message, attempts=attempt)
 
         self._publish(
             "tool_dispatch",
-            {
-                "tool": call.name,
-                "provider_id": provider.provider_id,
-                "attempt": attempt,
-            },
+            {"tool": call.name, "provider_id": provider.provider_id, "attempt": attempt},
         )
 
         try:
@@ -94,31 +120,29 @@ class ToolBus:
             else:
                 raw_result = provider.execute(call)
         except TimeoutError:
-            return ToolResult(
-                ok=False,
-                tool_name=call.name,
-                provider_id=provider.provider_id,
-                error=f"tool timeout after {timeout:.2f}s",
-                attempts=attempt,
-            )
+            state = self.registry.providers.record_failure(provider.provider_id, f"timeout after {timeout:.2f}s")
+            self._publish("provider_failed", {"provider_id": provider.provider_id, "tool": call.name, "error": state.last_error})
+            if state.circuit_open:
+                self._publish("provider_circuit_open", {"provider_id": provider.provider_id, "tool": call.name})
+            return ToolResult(ok=False, tool_name=call.name, provider_id=provider.provider_id, error=state.last_error, attempts=attempt)
         except ProviderUnavailableError as exc:
-            return ToolResult(
-                ok=False,
-                tool_name=call.name,
-                provider_id=provider.provider_id,
-                error=str(exc),
-                attempts=attempt,
-            )
+            state = self.registry.providers.record_failure(provider.provider_id, str(exc))
+            self._publish("provider_failed", {"provider_id": provider.provider_id, "tool": call.name, "error": state.last_error})
+            if state.circuit_open:
+                self._publish("provider_circuit_open", {"provider_id": provider.provider_id, "tool": call.name})
+            return ToolResult(ok=False, tool_name=call.name, provider_id=provider.provider_id, error=str(exc), attempts=attempt)
         except Exception as exc:
-            return ToolResult(
-                ok=False,
-                tool_name=call.name,
-                provider_id=provider.provider_id,
-                error=f"provider execution failed: {exc}",
-                attempts=attempt,
-            )
+            state = self.registry.providers.record_failure(provider.provider_id, f"provider execution failed: {exc}")
+            self._publish("provider_failed", {"provider_id": provider.provider_id, "tool": call.name, "error": state.last_error})
+            if state.circuit_open:
+                self._publish("provider_circuit_open", {"provider_id": provider.provider_id, "tool": call.name})
+            return ToolResult(ok=False, tool_name=call.name, provider_id=provider.provider_id, error=state.last_error, attempts=attempt)
 
         result = self._coerce_result(raw_result, call=call, provider=provider, attempt=attempt)
+        if result.ok:
+            self.registry.providers.record_success(provider.provider_id)
+        else:
+            self.registry.providers.record_failure(provider.provider_id, result.error)
         self._publish(
             "tool_result",
             {

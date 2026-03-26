@@ -16,13 +16,14 @@ def _coerce_int(value: Any, default: int) -> int:
 
 class LocalFileProvider(BaseToolProvider):
     provider_id = "local_file_provider"
-    supported_tools = ["file.read"]
+    supported_tools = ["file.read", "code.search"]
 
     def __init__(self, config: AppConfig, *, executor: LocalToolExecutor | None = None) -> None:
         self._executor = executor or LocalToolExecutor(config)
 
     def execute(self, call: ToolCall) -> ToolResult:
-        if str(call.name or "").strip() != "file.read":
+        tool_name = str(call.name or "").strip()
+        if tool_name not in {"file.read", "code.search"}:
             return ToolResult(
                 ok=False,
                 tool_name=call.name,
@@ -31,7 +32,7 @@ class LocalFileProvider(BaseToolProvider):
             )
 
         args = dict(call.arguments or {})
-        operation = str(args.get("operation") or "read").strip().lower()
+        operation = str(args.get("operation") or ("code_search" if tool_name == "code.search" else "read")).strip().lower()
         legacy_name = "read_text_file"
         legacy_args: dict[str, Any]
 
@@ -106,7 +107,7 @@ class LocalFileProvider(BaseToolProvider):
         payload = self._executor.execute(legacy_name, legacy_args)
         return ToolResult(
             ok=bool(payload.get("ok")),
-            tool_name=call.name,
+            tool_name=tool_name,
             provider_id=self.provider_id,
             data=payload,
             error=str(payload.get("error") or ""),

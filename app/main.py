@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.bootstrap import AgentOSRuntime, assemble_runtime
 from app.config import load_config
+from app.contracts import TaskRequest
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
@@ -1237,33 +1238,40 @@ def _process_chat_request(
                 attachment_ids=resolved_attachment_ids,
             )
 
-        _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。", run_id=run_id)
-        (
-            text,
-            tool_events,
-            attachment_note,
-            execution_plan,
-            execution_trace,
-            pipeline_hooks,
-            debug_flow,
-            agent_panels,
-            active_roles,
-            current_role,
-            role_states,
-            answer_bundle,
-            token_usage,
-            effective_model,
-            route_state,
-        ) = agent.run_chat(
-            history_turns=session.get("turns", []),
-            summary=session.get("summary", ""),
-            user_message=req.message,
-            attachment_metas=attachments,
-            settings=req.settings,
-            session_id=session_id,
-            route_state=route_state_input,
-            progress_cb=progress_cb,
+        _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始通过 KernelHost 分发 office_module。", run_id=run_id)
+        task_request = TaskRequest(
+            task_id=run_id,
+            task_type="chat",
+            message=req.message,
+            attachments=attachments,
+            settings=req.settings.model_dump(),
+            context={
+                "history_turns": session.get("turns", []),
+                "summary": session.get("summary", ""),
+                "session_id": session_id,
+                "route_state": route_state_input,
+                "progress_cb": progress_cb,
+            },
         )
+        module_response = get_agent_os_runtime().dispatch(task_request, module_id="office_module")
+        if not module_response.ok:
+            raise HTTPException(status_code=500, detail=module_response.error or "office_module dispatch failed")
+        payload = dict(module_response.payload or {})
+        text = str(module_response.text or "")
+        tool_events = list(payload.get("tool_events") or [])
+        attachment_note = str(payload.get("attachment_note") or "")
+        execution_plan = list(payload.get("execution_plan") or [])
+        execution_trace = list(payload.get("execution_trace") or [])
+        pipeline_hooks = list(payload.get("pipeline_hooks") or [])
+        debug_flow = list(payload.get("debug_flow") or [])
+        agent_panels = list(payload.get("agent_panels") or [])
+        active_roles = list(payload.get("active_roles") or [])
+        current_role = str(payload.get("current_role") or "")
+        role_states = list(payload.get("role_states") or [])
+        answer_bundle = payload.get("answer_bundle") or {}
+        token_usage = dict(payload.get("usage_total") or {})
+        effective_model = str(payload.get("effective_model") or "")
+        route_state = payload.get("route_state") if isinstance(payload.get("route_state"), dict) else {}
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
         if missing_attachment_ids:
             warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"

@@ -7,10 +7,12 @@ from app.contracts.errors import (
     ToolExecutionError,
 )
 from app.contracts.health import HealthReport, HealthStatus
-from app.contracts.manifest import ModuleKind, ModuleManifest
-from app.contracts.module import BaseBusinessModule, BaseModule, BaseSystemModule, BaseToolProvider
+from app.contracts.manifest import CompatibilityLevel, ModuleKind, ModuleManifest
+from app.contracts.module import BaseBusinessModule, BaseModule, BaseSystemModule, BaseToolProvider, provider_contract_from_instance
+from app.contracts.provider_contract import ProviderContract
 from app.contracts.task import TaskRequest, TaskResponse
 from app.contracts.tool import ToolCall, ToolResult
+from app.contracts.tool_contract import ToolContract
 
 __all__ = [
     "AgentOSError",
@@ -21,14 +23,18 @@ __all__ = [
     "ToolExecutionError",
     "HealthReport",
     "HealthStatus",
+    "CompatibilityLevel",
     "ModuleKind",
     "ModuleManifest",
     "BaseBusinessModule",
     "BaseModule",
     "BaseSystemModule",
     "BaseToolProvider",
+    "ProviderContract",
+    "provider_contract_from_instance",
     "TaskRequest",
     "TaskResponse",
     "ToolCall",
     "ToolResult",
+    "ToolContract",
 ]

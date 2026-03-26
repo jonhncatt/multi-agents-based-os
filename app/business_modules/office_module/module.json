@@ -1,0 +1,12 @@
+{
+  "module_id": "office_module",
+  "display_name": "Office Module",
+  "version": "1.1.0",
+  "capabilities": ["task.chat", "task.office", "task.workflow"],
+  "required_tools": ["workspace.read", "file.read", "web.search", "write.patch"],
+  "optional_tools": ["workspace.write", "web.fetch", "code.search", "session.lookup"],
+  "healthcheck": "health_check",
+  "rollback_strategy": "registry_rollback",
+  "owner": "office-agent-os",
+  "compatibility_level": "shim"
+}

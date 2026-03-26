@@ -1,18 +1,10 @@
 # agent-core
 
-统一的多 agent 运行时内核。
+Compatibility placeholder for the historical distribution-style name.
 
-承接内容：
-- RoleSpec / RoleContext / RoleResult
-- RoleInstance / TaskNode / RunState
-- RoleRegistry / RuntimeController
-- 通用 orchestration（后续从 app/agent.py 继续抽出）
+Canonical implementation:
+- `packages/agent_core`
 
-说明：
-- 这里是“多 agent 引擎”，不是具体 office 角色包。
-- 具体 roles / tools / prompts 由 capability modules 提供。
-- 当前已承接：
-  - `RoleSpec / RoleContext / RoleResult`
-  - `RoleRegistry / RuntimeController`
-  - capability runtime 装配支撑
-- 这里提供的是 `agent runtime`，不是具体 `AgentModule` 实现。
+Current rule:
+- Python imports must use `packages.agent_core`
+- This directory exists only so the historical hyphenated name remains documented during migration

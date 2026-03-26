@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+__doc__ = """Compatibility shim for legacy office intent helpers.
+
+The active request path now resolves business execution through KernelHost
+and `office_module`. These helpers remain only to support the legacy
+OfficeAgent compatibility runtime.
+"""
+
 from pathlib import Path
 import re
 from typing import Any

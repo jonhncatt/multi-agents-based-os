@@ -4,6 +4,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from app.contracts.health import HealthReport
 from app.contracts.manifest import ModuleManifest
+from app.contracts.provider_contract import ProviderContract
 from app.contracts.task import TaskRequest, TaskResponse
 from app.contracts.tool import ToolCall, ToolResult
 
@@ -37,3 +38,14 @@ class BaseToolProvider(Protocol):
     def execute(self, call: ToolCall) -> ToolResult: ...
 
     def health_check(self) -> HealthReport: ...
+
+
+def provider_contract_from_instance(provider: BaseToolProvider) -> ProviderContract:
+    contract = getattr(provider, "provider_contract", None)
+    if isinstance(contract, ProviderContract):
+        return contract
+    return ProviderContract(
+        provider_id=str(getattr(provider, "provider_id", "") or "").strip(),
+        supported_tools=list(getattr(provider, "supported_tools", []) or []),
+        degraded_behavior="fallback_or_degrade",
+    )

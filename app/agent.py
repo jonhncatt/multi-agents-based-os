@@ -621,6 +621,14 @@ class ReadSessionHistoryArgs(BaseModel):
 
 
 class OfficeAgent:
+    """Compatibility runtime for the legacy office orchestration stack.
+
+    Formal request entry now flows through `KernelHost -> office_module`.
+    This class remains because `office_module` still delegates execution
+    here while the office pipeline is being migrated behind the business
+    module boundary.
+    """
+
     def __init__(
         self,
         config: AppConfig,

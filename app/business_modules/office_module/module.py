@@ -3,13 +3,23 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from app.contracts import HealthReport, TaskRequest, TaskResponse
-from app.models import ChatSettings
-from app.business_modules.office_module.manifest import OFFICE_MODULE_MANIFEST
+from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBILITY_SHIMS, OFFICE_MODULE_MANIFEST
+from app.business_modules.office_module.pipeline.runtime import build_office_pipeline_trace
+from app.business_modules.office_module.policies.catalog import OFFICE_MODULE_POLICY_SET
 from app.business_modules.office_module.workflow import ROLE_CHAIN, build_office_workflow_plan
+from app.contracts import HealthReport, TaskRequest, TaskResponse
+from app.kernel.runtime_context import RuntimeContext
+from app.models import ChatSettings
 
 
 class OfficeModule:
+    """Standard business-module entrypoint.
+
+    The execution core still relies on the legacy OfficeAgent runtime for now.
+    This module is the formal business-module surface and is treated as the
+    compatibility boundary for legacy orchestration logic.
+    """
+
     manifest = OFFICE_MODULE_MANIFEST
 
     def __init__(
@@ -45,28 +55,46 @@ class OfficeModule:
             component_id=self.manifest.module_id,
             status="healthy",
             summary="office module active",
-            details={"roles": list(ROLE_CHAIN)},
+            details={
+                "roles": list(ROLE_CHAIN),
+                "compatibility_level": self.manifest.compatibility_level,
+                "required_tools": list(self.manifest.required_tools),
+                "optional_tools": list(self.manifest.optional_tools),
+            },
         )
 
     def shutdown(self) -> None:
         self._agent = None
 
-    def invoke(self, request: TaskRequest) -> TaskResponse:
+    def handle(self, request: TaskRequest, context: RuntimeContext) -> TaskResponse:
         runtime = self._runtime()
-        context = dict(request.context or {})
+        request_context = dict(request.context or {})
+        context.selected_roles = list(context.selected_roles or ROLE_CHAIN)
+        context.selected_tools = list(context.selected_tools or [*self.manifest.required_tools, *self.manifest.optional_tools])
+        context.metadata.setdefault("compatibility_shims", list(OFFICE_MODULE_COMPATIBILITY_SHIMS))
+        context.metadata.setdefault("policy_set", list(OFFICE_MODULE_POLICY_SET))
         try:
             settings_obj = self._normalize_settings(request.settings)
             run = runtime.run_chat(
-                context.get("history_turns") or [],
-                str(context.get("summary") or ""),
+                request_context.get("history_turns") or [],
+                str(request_context.get("summary") or ""),
                 request.message,
                 request.attachments,
                 settings_obj,
-                session_id=context.get("session_id"),
-                route_state=context.get("route_state") if isinstance(context.get("route_state"), dict) else None,
-                progress_cb=context.get("progress_cb"),
+                session_id=request_context.get("session_id"),
+                route_state=request_context.get("route_state") if isinstance(request_context.get("route_state"), dict) else None,
+                progress_cb=request_context.get("progress_cb"),
             )
             payload = self._normalize_run_payload(run)
+            payload["module_id"] = self.manifest.module_id
+            payload["selected_roles"] = list(context.selected_roles)
+            payload["selected_tools"] = list(context.selected_tools)
+            payload["selected_providers"] = list(context.selected_providers)
+            payload["compatibility_shims"] = list(OFFICE_MODULE_COMPATIBILITY_SHIMS)
+            payload["module_pipeline"] = build_office_pipeline_trace(
+                active_roles=payload.get("active_roles"),
+                current_role=payload.get("current_role"),
+            )
             return TaskResponse(
                 ok=True,
                 task_id=request.task_id,
@@ -74,12 +102,16 @@ class OfficeModule:
                 payload=payload,
             )
         except Exception as exc:
+            context.health_state = "degraded"
             return TaskResponse(
                 ok=False,
                 task_id=request.task_id,
                 error=str(exc),
-                warnings=["office_module invoke failed"],
+                warnings=["office_module handle failed"],
             )
+
+    def invoke(self, request: TaskRequest) -> TaskResponse:
+        return self.handle(request, RuntimeContext(request_id=request.task_id, module_id=self.manifest.module_id))
 
     def run_chat(
         self,
@@ -141,5 +173,4 @@ class OfficeModule:
             "effective_model",
             "route_state",
         )
-        payload = {name: (run[idx] if idx < len(run) else None) for idx, name in enumerate(fields)}
-        return payload
+        return {name: (run[idx] if idx < len(run) else None) for idx, name in enumerate(fields)}

@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+__doc__ = """Compatibility host for the legacy capability-runtime stack.
+
+The formal Agent OS entrypoint is `app/kernel/host.py`. This host stays
+in place because health/debug views and the current OfficeAgent
+compatibility runtime still depend on capability-runtime surfaces during
+migration.
+"""
+
 from typing import Any
 
 from packages.agent_core import AgentCapabilityRuntime, build_agent_capability_runtime

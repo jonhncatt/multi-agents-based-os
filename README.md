@@ -231,12 +231,39 @@ cd $HOME\Desktop\officetool
 
 ```text
 HTTP / UI
-  -> KernelHost
-  -> 通过 contracts 选择 BusinessModule
-  -> BusinessModule 按内部 workflow 调度 role agents
-  -> 所有工具调用统一走 ToolBus
-  -> ToolBus 按 tool name 路由到 Provider
+  -> app/bootstrap/assemble.py
+  -> KernelHost.dispatch(TaskRequest)
+  -> office_module.handle(request, context)
+  -> compatibility OfficeAgent runtime
+  -> ToolBus / ToolRegistry / ProviderRegistry
+  -> response + trace
 ```
+
+当前推荐入口：
+
+- HTTP/API：[`app/main.py`](/Users/dalizhou/Desktop/new_validation_agent/app/main.py)
+- 装配入口：[`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py)
+- 正式内核：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
+- 正式业务模块：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
+
+当前 compatibility layers：
+
+- [`app/agent.py`](/Users/dalizhou/Desktop/new_validation_agent/app/agent.py)：legacy OfficeAgent runtime
+- [`packages/runtime_core/kernel_host.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/runtime_core/kernel_host.py)：legacy capability host
+- [`app/request_analysis_support.py`](/Users/dalizhou/Desktop/new_validation_agent/app/request_analysis_support.py)
+- [`app/router_intent_support.py`](/Users/dalizhou/Desktop/new_validation_agent/app/router_intent_support.py)
+- [`app/router_rules.py`](/Users/dalizhou/Desktop/new_validation_agent/app/router_rules.py)
+- [`app/execution_policy.py`](/Users/dalizhou/Desktop/new_validation_agent/app/execution_policy.py)
+
+迁移文档：
+
+- [当前执行路径](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/current_execution_path.md)
+- [Kernel 合同](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/kernel_contract.md)
+- [Tool / Provider 合同](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/tool_provider_contract.md)
+- [Office Module](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/office_module.md)
+- [Trace 指南](/Users/dalizhou/Desktop/new_validation_agent/docs/observability/trace_guide.md)
+- [Package 收敛](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/package_consolidation.md)
+- [Deprecation Plan](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/deprecation_plan.md)
 
 ### Regression Evals
 

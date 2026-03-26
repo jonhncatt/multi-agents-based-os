@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+__doc__ = """Compatibility shim for historical router hint tables.
+
+Canonical routing now flows through the v2 intent pipeline and the
+`office_module` business entrypoint. This module persists while the
+legacy OfficeAgent runtime is still mounted behind that compatibility
+boundary.
+"""
+
 
 VERIFICATION_HINTS = (
     "证据",

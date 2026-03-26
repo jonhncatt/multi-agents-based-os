@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+__doc__ = """Compatibility shim for historical execution-policy lookups.
+
+Formal business dispatch now starts at KernelHost and `office_module`.
+These policy tables remain to support the legacy OfficeAgent runtime
+that still executes behind the module boundary.
+"""
+
 from dataclasses import dataclass
 from typing import Literal
 

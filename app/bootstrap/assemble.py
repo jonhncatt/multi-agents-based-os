@@ -6,6 +6,7 @@ from typing import Any, Callable
 from app.bootstrap.config import AgentOSAssembleConfig, build_assemble_config
 from app.business_modules import AdaptationModule, CodingModule, OfficeModule, ResearchModule
 from app.config import AppConfig
+from app.contracts import TaskRequest, TaskResponse, ToolContract
 from app.kernel import KernelHost
 from app.local_tools import LocalToolExecutor
 from app.system_modules import MemoryModule, OutputModule, PolicyModule, ToolRuntimeModule
@@ -15,6 +16,82 @@ from app.tool_providers import (
     LocalWorkspaceProvider,
     PatchWriteProvider,
     SessionStoreProvider,
+)
+
+
+_DEFAULT_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
+    ToolContract(
+        tool_id="workspace.read",
+        input_schema={"path": "string", "max_entries": "integer"},
+        output_schema={"entries": "array"},
+        timeout=10.0,
+        retry_policy={"max_retries": 0},
+        permission_scope="workspace:read",
+        description="List workspace contents through ToolRegistry.",
+    ),
+    ToolContract(
+        tool_id="workspace.write",
+        input_schema={"operation": "string"},
+        output_schema={"ok": "boolean"},
+        timeout=20.0,
+        retry_policy={"max_retries": 0},
+        permission_scope="workspace:write",
+        description="Write or copy files within the workspace.",
+    ),
+    ToolContract(
+        tool_id="file.read",
+        input_schema={"path": "string", "operation": "string"},
+        output_schema={"text": "string"},
+        timeout=15.0,
+        retry_policy={"max_retries": 0},
+        permission_scope="file:read",
+        description="Read document or file content with structured operations.",
+    ),
+    ToolContract(
+        tool_id="code.search",
+        input_schema={"query": "string", "root": "string"},
+        output_schema={"matches": "array"},
+        timeout=15.0,
+        retry_policy={"max_retries": 0},
+        permission_scope="code:search",
+        description="Search source code through the file provider.",
+    ),
+    ToolContract(
+        tool_id="web.search",
+        input_schema={"query": "string"},
+        output_schema={"results": "array"},
+        timeout=12.0,
+        retry_policy={"max_retries": 1},
+        permission_scope="web:search",
+        description="Search the web through a provider-backed capability.",
+    ),
+    ToolContract(
+        tool_id="web.fetch",
+        input_schema={"url": "string"},
+        output_schema={"text": "string"},
+        timeout=15.0,
+        retry_policy={"max_retries": 1},
+        permission_scope="web:fetch",
+        description="Fetch a web page through a provider-backed capability.",
+    ),
+    ToolContract(
+        tool_id="write.patch",
+        input_schema={"path": "string"},
+        output_schema={"ok": "boolean"},
+        timeout=20.0,
+        retry_policy={"max_retries": 0},
+        permission_scope="workspace:patch",
+        description="Apply text replacement style patches.",
+    ),
+    ToolContract(
+        tool_id="session.lookup",
+        input_schema={"session_id": "string"},
+        output_schema={"turns": "array"},
+        timeout=10.0,
+        retry_policy={"max_retries": 0},
+        permission_scope="session:read",
+        description="Read stored session state via ToolRegistry.",
+    ),
 )
 
 
@@ -40,6 +117,9 @@ class AgentOSRuntime:
         self.bind_legacy_host(self._legacy_host_factory())
         return self._legacy_host
 
+    def dispatch(self, request: TaskRequest, *, module_id: str | None = None) -> TaskResponse:
+        return self.kernel.dispatch(request, module_id=module_id)
+
     def snapshot(self) -> dict[str, object]:
         return {
             "kernel": self.kernel.health_snapshot(),
@@ -49,7 +129,36 @@ class AgentOSRuntime:
             },
             "providers": sorted(self.providers.keys()),
             "office_workflow": self.office_module.workflow_plan(),
+            "current_execution_path": (
+                "FastAPI -> KernelHost.dispatch -> business module handle -> ToolRegistry/ProviderRegistry -> response"
+            ),
+            "compatibility_shims": [
+                "app.agent.OfficeAgent",
+                "packages.runtime_core.kernel_host.KernelHost",
+                "app.request_analysis_support",
+                "app.router_intent_support",
+                "app.router_rules",
+                "app.execution_policy",
+            ],
         }
+
+
+def _register_default_tool_contracts(kernel: KernelHost) -> None:
+    primary_providers = {
+        "workspace.read": "local_workspace_provider",
+        "workspace.write": "local_workspace_provider",
+        "file.read": "local_file_provider",
+        "code.search": "local_file_provider",
+        "web.search": "http_web_provider",
+        "web.fetch": "http_web_provider",
+        "write.patch": "patch_write_provider",
+        "session.lookup": "session_store_provider",
+    }
+    for contract in _DEFAULT_TOOL_CONTRACTS:
+        kernel.registry.register_tool_contract(
+            contract,
+            primary_provider=primary_providers.get(contract.tool_id, ""),
+        )
 
 
 def assemble_runtime(
@@ -98,6 +207,7 @@ def assemble_runtime(
     if cfg.enable_session_provider:
         providers["session_store_provider"] = SessionStoreProvider(app_config, executor=shared_executor)
 
+    _register_default_tool_contracts(kernel)
     for provider in providers.values():
         kernel.register_provider(provider)  # type: ignore[arg-type]
 
