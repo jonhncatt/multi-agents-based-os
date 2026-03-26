@@ -19,6 +19,44 @@ class ExecutionPolicySpec:
 _DEFAULT_SPEC = ExecutionPolicySpec(planner="always", reviewer=True, revision=True, structurer=True, conflict_detector=True)
 
 _POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
+    "standard_safe_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=False,
+        conflict_detector=True,
+    ),
+    "understanding_direct": ExecutionPolicySpec(planner="never"),
+    "evidence_lookup": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=True,
+        conflict_detector=True,
+    ),
+    "web_research": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=True,
+        conflict_detector=True,
+    ),
+    "code_lookup": ExecutionPolicySpec(planner="never"),
+    "grounded_generation_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=False,
+        conflict_detector=True,
+    ),
+    "direct_generation": ExecutionPolicySpec(planner="never"),
+    "meeting_minutes_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=False,
+        revision=False,
+        structurer=True,
+        conflict_detector=False,
+    ),
     "standard_full_pipeline": ExecutionPolicySpec(
         planner="always",
         reviewer=True,
@@ -44,11 +82,11 @@ _POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
     "grounded_generation_with_tools": ExecutionPolicySpec(planner="always"),
     "generation_with_tools": ExecutionPolicySpec(planner="always"),
     "meeting_minutes_output": ExecutionPolicySpec(planner="when_tools"),
-    "attachment_holistic_understanding_with_tools": ExecutionPolicySpec(planner="always"),
+    "attachment_holistic_understanding_with_tools": ExecutionPolicySpec(planner="never"),
     "attachment_followup_understanding_with_tools": ExecutionPolicySpec(planner="always"),
     "attachment_understanding_with_tools": ExecutionPolicySpec(planner="always"),
     "attachment_tooling_generic": ExecutionPolicySpec(planner="always"),
-    "code_lookup_with_tools": ExecutionPolicySpec(planner="always"),
+    "code_lookup_with_tools": ExecutionPolicySpec(planner="never"),
     "continue_tooling": ExecutionPolicySpec(planner="always"),
     "llm_router_attachment_ambiguity": ExecutionPolicySpec(planner="always"),
     "llm_router_tool_ambiguity": ExecutionPolicySpec(planner="always"),

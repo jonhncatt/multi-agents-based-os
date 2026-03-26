@@ -6,9 +6,22 @@ from app.intent_schema import RequestSignals
 
 
 class RouterSignalExtractor:
-    def __init__(self, agent: Any, *, news_hints: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        agent: Any,
+        *,
+        news_hints: tuple[str, ...],
+        followup_reference_hints: tuple[str, ...] = (),
+        followup_transform_hints: tuple[str, ...] = (),
+    ) -> None:
         self._agent = agent
         self._news_hints = tuple(str(item or "").strip().lower() for item in news_hints if str(item or "").strip())
+        self._followup_reference_hints = tuple(
+            str(item or "").strip().lower() for item in followup_reference_hints if str(item or "").strip()
+        )
+        self._followup_transform_hints = tuple(
+            str(item or "").strip().lower() for item in followup_transform_hints if str(item or "").strip()
+        )
 
     def extract(
         self,
@@ -130,6 +143,14 @@ class RouterSignalExtractor:
             bool(getattr(settings, "enable_tools", False))
             and self._agent._should_auto_search_default_roots(user_message, attachment_metas)
         )
+        reference_followup_like = self._looks_like_reference_followup(text)
+        transform_followup_like = self._looks_like_transform_followup(text)
+        short_followup_like = self._looks_like_short_followup(
+            text=text,
+            context_dependent_followup=context_dependent_followup,
+            reference_followup_like=reference_followup_like,
+            transform_followup_like=transform_followup_like,
+        )
 
         signals = RequestSignals(
             text=text,
@@ -154,6 +175,9 @@ class RouterSignalExtractor:
             local_code_lookup_request=bool(local_code_lookup_request),
             grounded_code_generation_context=bool(grounded_code_generation_context),
             default_root_search=default_root_search,
+            short_followup_like=short_followup_like,
+            transform_followup_like=transform_followup_like,
+            reference_followup_like=reference_followup_like,
         )
 
         inherited_primary_intent = self._agent._infer_followup_primary_intent_from_state(
@@ -163,4 +187,66 @@ class RouterSignalExtractor:
         )
         if inherited_primary_intent:
             signals.inherited_primary_intent = str(inherited_primary_intent)
+        signals.ambiguity_score = self._ambiguity_score(signals)
         return signals
+
+    def _looks_like_reference_followup(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        return any(hint in lowered for hint in self._followup_reference_hints)
+
+    def _looks_like_transform_followup(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        if any(hint in lowered for hint in self._followup_transform_hints):
+            return True
+        return bool(self._agent._looks_like_write_or_edit_action(lowered))
+
+    def _looks_like_short_followup(
+        self,
+        *,
+        text: str,
+        context_dependent_followup: bool,
+        reference_followup_like: bool,
+        transform_followup_like: bool,
+    ) -> bool:
+        compact = str(text or "").strip()
+        if not compact:
+            return False
+        if len(compact) <= 18 and context_dependent_followup:
+            return True
+        if len(compact) <= 28 and (reference_followup_like or transform_followup_like):
+            return True
+        return False
+
+    def _ambiguity_score(self, signals: RequestSignals) -> float:
+        score = 0.0
+        text_len = len(str(signals.text or "").strip())
+        if signals.inherited_primary_intent and text_len <= 42:
+            score += 0.28
+        if signals.context_dependent_followup:
+            score += 0.2
+        if signals.inline_followup_context:
+            score += 0.16
+        if signals.short_followup_like:
+            score += 0.2
+        if signals.reference_followup_like:
+            score += 0.12
+        if signals.transform_followup_like:
+            score += 0.12
+        if signals.reference_followup_like and signals.transform_followup_like:
+            score += 0.1
+        if signals.request_requires_tools and not (
+            signals.source_trace_request
+            or signals.spec_lookup_request
+            or signals.web_request
+            or signals.local_code_lookup_request
+        ):
+            score += 0.08
+        if signals.source_trace_request or signals.spec_lookup_request or signals.meeting_minutes_request:
+            score -= 0.18
+        if signals.web_request:
+            score -= 0.1
+        return max(0.0, min(1.0, score))

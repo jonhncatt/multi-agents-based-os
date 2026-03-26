@@ -101,7 +101,6 @@ from app.core.kernel_debug_support import (
 )
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
-from app.intent_schema import IntentClassification, RequestSignals
 from app.policy_router import PolicyRouter
 from app.evolution import EvolutionStore
 from app.models import AgentPanel, ChatSettings, ToolEvent
@@ -6847,465 +6846,8 @@ class OfficeAgent:
         signals: dict[str, Any],
         fallback: dict[str, Any],
     ) -> dict[str, Any]:
-        has_attachments = bool(signals.get("has_attachments"))
-        attachment_needs_tooling = bool(signals.get("attachment_needs_tooling"))
-        inline_parseable_attachments = bool(signals.get("inline_parseable_attachments"))
-        understanding_request = bool(signals.get("understanding_request"))
-        web_request = bool(signals.get("web_request"))
-        spec_lookup_request = bool(signals.get("spec_lookup_request"))
-        evidence_required = bool(signals.get("evidence_required"))
-        request_requires_tools = bool(signals.get("request_requires_tools"))
-        text = str(signals.get("text") or "")
-
-        if primary_intent == "generation":
-            if bool(signals.get("grounded_code_generation_context")):
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "grounded_code_generation",
-                        "complexity": "high" if (has_attachments or evidence_required or spec_lookup_request) else "medium",
-                        "use_planner": True,
-                        "use_worker_tools": bool(settings.enable_tools),
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["file_reader"] if has_attachments else [],
-                        "execution_policy": "grounded_generation_with_tools",
-                        "reason": "rules_grounded_code_generation_request",
-                        "summary": "检测到基于附件/原文/现有代码的生成请求，保留阅读与实现链路，但不进入事实审阅链。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            return self._normalize_route_decision(
-                {
-                    "task_type": "code_generation",
-                    "complexity": "high" if has_attachments else "medium",
-                    "use_planner": True,
-                    "use_worker_tools": bool(settings.enable_tools),
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader"] if has_attachments else [],
-                    "execution_policy": "generation_with_tools",
-                    "reason": "rules_code_generation_request",
-                    "summary": "检测到代码生成/改写请求，直接交给 Worker 实现，不走事实审阅链。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if primary_intent == "evidence":
-            return self._normalize_route_decision(
-                {
-                    "task_type": "evidence_lookup",
-                    "complexity": "high" if has_attachments else "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": True,
-                    "use_revision": True,
-                    "use_structurer": True,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": True,
-                    "specialists": ["file_reader"] if has_attachments else [],
-                    "execution_policy": "evidence_full_pipeline",
-                    "reason": (
-                        "rules_source_trace_request"
-                        if bool(signals.get("source_trace_request")) and has_attachments
-                        else "rules_evidence_or_spec_request"
-                    ),
-                    "summary": (
-                        "检测到来源定位请求，强制走取证链路并返回可复核出处。"
-                        if bool(signals.get("source_trace_request")) and has_attachments
-                        else "检测到查证/定位类任务，保留完整取证链路。"
-                    ),
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if primary_intent == "meeting_minutes":
-            needs_attachment_tools = has_attachments and (attachment_needs_tooling or not inline_parseable_attachments)
-            use_tools = bool(settings.enable_tools and needs_attachment_tools)
-            return self._normalize_route_decision(
-                {
-                    "task_type": "meeting_minutes",
-                    "complexity": "medium" if has_attachments else "low",
-                    "use_planner": use_tools,
-                    "use_worker_tools": use_tools,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader", "summarizer"] if has_attachments else ["summarizer"],
-                    "execution_policy": "meeting_minutes_output",
-                    "reason": "rules_meeting_minutes_request",
-                    "summary": "检测到会议纪要整理任务，输出面向记录与执行项，不进入证据审计链。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if primary_intent == "understanding":
-            if (
-                signals.get("inline_followup_context")
-                and signals.get("context_dependent_followup")
-                and not has_attachments
-                and not web_request
-                and not signals.get("local_code_lookup_request")
-                and not self._message_has_explicit_local_path(user_message)
-                and not self._looks_like_write_or_edit_action(text)
-            ):
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "simple_understanding",
-                        "complexity": "low",
-                        "use_planner": False,
-                        "use_worker_tools": False,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["summarizer"],
-                        "execution_policy": "inline_followup_understanding",
-                        "reason": "rules_inline_followup_context_understanding",
-                        "summary": "检测到引用上一轮原文的加工型跟进，直接沿用现有原文上下文回答。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            if has_attachments and bool(signals.get("holistic_document_explanation")) and not web_request:
-                if attachment_needs_tooling or not inline_parseable_attachments:
-                    return self._normalize_route_decision(
-                        {
-                            "task_type": "attachment_tooling",
-                            "complexity": "medium",
-                            "use_planner": True,
-                            "use_worker_tools": True,
-                            "use_reviewer": False,
-                            "use_revision": False,
-                            "use_structurer": False,
-                            "use_web_prefetch": False,
-                            "use_conflict_detector": False,
-                            "specialists": ["file_reader"],
-                            "execution_policy": "attachment_holistic_understanding_with_tools",
-                            "reason": "rules_attachment_holistic_understanding_requires_tooling",
-                            "summary": "检测到附件整体理解任务，先读文档再做高层解释，不进入取证审阅链。",
-                        },
-                        fallback=fallback,
-                        settings=settings,
-                    )
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "simple_understanding",
-                        "complexity": "low",
-                        "use_planner": False,
-                        "use_worker_tools": False,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["file_reader", "summarizer"],
-                        "execution_policy": "attachment_holistic_understanding_direct",
-                        "reason": "rules_attachment_holistic_understanding",
-                        "summary": "检测到附件整体理解任务，直接围绕整体结构与主线做解释，不进入取证审阅链。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            if has_attachments and str(signals.get("inherited_primary_intent") or "") == "understanding":
-                if attachment_needs_tooling or not inline_parseable_attachments:
-                    return self._normalize_route_decision(
-                        {
-                            "task_type": "attachment_tooling",
-                            "complexity": "medium",
-                            "use_planner": True,
-                            "use_worker_tools": True,
-                            "use_reviewer": False,
-                            "use_revision": False,
-                            "use_structurer": False,
-                            "use_web_prefetch": False,
-                            "use_conflict_detector": False,
-                            "specialists": ["file_reader"],
-                            "execution_policy": "attachment_followup_understanding_with_tools",
-                            "reason": "rules_attachment_followup_inherited_understanding_requires_tooling",
-                            "summary": "检测到沿用上一轮理解任务的附件跟进，继续读取文档并输出解释，不进入证据审阅链。",
-                        },
-                        fallback=fallback,
-                        settings=settings,
-                    )
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "simple_understanding",
-                        "complexity": "low",
-                        "use_planner": False,
-                        "use_worker_tools": False,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["file_reader", "summarizer"],
-                        "execution_policy": "attachment_followup_understanding_direct",
-                        "reason": "rules_attachment_followup_inherited_understanding",
-                        "summary": "检测到沿用上一轮理解任务的附件跟进，继续基于附件内容组织解释。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            if has_attachments and understanding_request and not spec_lookup_request and not evidence_required and not web_request:
-                if attachment_needs_tooling or not inline_parseable_attachments:
-                    return self._normalize_route_decision(
-                        {
-                            "task_type": "attachment_tooling",
-                            "complexity": "medium",
-                            "use_planner": True,
-                            "use_worker_tools": True,
-                            "use_reviewer": False,
-                            "use_revision": False,
-                            "use_structurer": False,
-                            "use_web_prefetch": False,
-                            "use_conflict_detector": False,
-                            "specialists": ["file_reader"],
-                            "execution_policy": "attachment_understanding_with_tools",
-                            "reason": "rules_attachment_understanding_requires_tooling",
-                            "summary": "检测到附件理解任务，先由 FileReader + Worker 工具链完成读取，再输出结论。",
-                        },
-                        fallback=fallback,
-                        settings=settings,
-                    )
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "simple_understanding",
-                        "complexity": "low",
-                        "use_planner": False,
-                        "use_worker_tools": False,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["file_reader", "summarizer"],
-                        "execution_policy": "attachment_understanding_direct",
-                        "reason": "rules_attachment_understanding",
-                        "summary": "检测到附件理解任务，直接基于附件内容组织解释，不进入事实审阅链。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            if has_attachments and inline_parseable_attachments and understanding_request and not attachment_needs_tooling:
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "simple_understanding",
-                        "complexity": "low",
-                        "use_planner": False,
-                        "use_worker_tools": False,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["summarizer"],
-                        "execution_policy": "small_parseable_attachment_understanding",
-                        "reason": "rules_small_parseable_attachment_understanding",
-                        "summary": "小型可解析附件的理解任务，直接由 Worker 作答。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            if not has_attachments and bool(signals.get("inline_document_payload")) and not request_requires_tools:
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "inline_document_understanding",
-                        "complexity": "low",
-                        "use_planner": False,
-                        "use_worker_tools": False,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["summarizer"],
-                        "execution_policy": "inline_document_understanding_direct",
-                        "reason": "rules_inline_document_payload_understanding",
-                        "summary": "检测到用户直接粘贴的原始长文本，按 inline 文档直接理解，不要求文件路径。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            if attachment_needs_tooling:
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "attachment_tooling",
-                        "complexity": "medium",
-                        "use_planner": True,
-                        "use_worker_tools": True,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["file_reader"],
-                        "execution_policy": "attachment_tooling_generic",
-                        "reason": "rules_attachment_requires_tooling",
-                        "summary": "附件需要解包或分块读取，先走 Worker 工具链。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-
-        if primary_intent == "web":
-            if bool(signals.get("web_news_brief_request")):
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "web_news",
-                        "complexity": "medium",
-                        "use_planner": False,
-                        "use_worker_tools": True,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": True,
-                        "use_conflict_detector": False,
-                        "specialists": ["researcher"],
-                        "execution_policy": "web_news_brief",
-                        "reason": "rules_web_news_brief",
-                        "summary": "检测到普通新闻/今日动态请求，启用轻量联网简报链路。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-            return self._normalize_route_decision(
-                {
-                    "task_type": "web_research",
-                    "complexity": "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": True,
-                    "use_revision": True,
-                    "use_structurer": True,
-                    "use_web_prefetch": True,
-                    "use_conflict_detector": True,
-                    "specialists": ["researcher"],
-                    "execution_policy": "web_research_full_pipeline",
-                    "reason": "rules_web_request",
-                    "summary": "检测到联网/实时信息请求，启用联网取证链路。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if primary_intent == "code_lookup":
-            return self._normalize_route_decision(
-                {
-                    "task_type": "code_lookup",
-                    "complexity": "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader"],
-                    "execution_policy": "code_lookup_with_tools",
-                    "reason": "rules_local_code_lookup_request",
-                    "summary": "检测到本地代码定位/函数解释请求，直接启用 Worker 工具链。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if primary_intent == "qa":
-            return self._normalize_route_decision(
-                {
-                    "task_type": "simple_qa",
-                    "complexity": "low",
-                    "use_planner": False,
-                    "use_worker_tools": False,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "execution_policy": "qa_direct",
-                    "reason": "rules_simple_qa",
-                    "summary": "简单问答，直接由 Worker 回答。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if bool(signals.get("explicit_tool_confirmation")) and settings.enable_tools:
-            if request_requires_tools or self._message_has_explicit_local_path(user_message):
-                return self._normalize_route_decision(
-                    {
-                        "task_type": "standard",
-                        "complexity": "medium",
-                        "use_planner": True,
-                        "use_worker_tools": True,
-                        "use_reviewer": False,
-                        "use_revision": False,
-                        "use_structurer": False,
-                        "use_web_prefetch": False,
-                        "use_conflict_detector": False,
-                        "specialists": ["file_reader"] if has_attachments else [],
-                        "execution_policy": "continue_tooling",
-                        "reason": "rules_explicit_tool_confirmation",
-                        "summary": "检测到用户明确要求继续读取/执行，延续 Worker 工具链。",
-                    },
-                    fallback=fallback,
-                    settings=settings,
-                )
-
-        if has_attachments and inline_parseable_attachments and not request_requires_tools:
-            return self._normalize_route_decision(
-                {
-                    "task_type": "mixed_attachment",
-                    "complexity": "medium",
-                    "needs_llm_router": True,
-                    "execution_policy": "llm_router_attachment_ambiguity",
-                    "reason": "rules_ambiguous_small_attachment_request",
-                    "summary": "附件可直接理解，但用户意图不够明确，交给轻量 Router 补判。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if not has_attachments and not request_requires_tools and len(text) <= 800:
-            return self._normalize_route_decision(
-                {
-                    "task_type": "general_qa",
-                    "complexity": "medium",
-                    "needs_llm_router": True,
-                    "execution_policy": "llm_router_general_ambiguity",
-                    "reason": "rules_ambiguous_general_request",
-                    "summary": "普通问答但复杂度不够明确，交给轻量 Router 补判。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
-        if request_requires_tools:
-            return self._normalize_route_decision(
-                {
-                    "task_type": "standard",
-                    "complexity": "medium",
-                    "needs_llm_router": True,
-                    "execution_policy": "llm_router_tool_ambiguity",
-                    "reason": "rules_ambiguous_tool_intent",
-                    "summary": "检测到工具意图但规则分诊不够确定，交给轻量 Router 补判最小链路。",
-                },
-                fallback=fallback,
-                settings=settings,
-            )
-
+        # Deprecated: policy decisions are produced by app/policy_router.py.
+        del primary_intent, user_message, attachment_metas, signals
         return self._normalize_route_decision(fallback, fallback=fallback, settings=settings)
 
     def _normalize_route_decision(
@@ -7432,19 +6974,18 @@ class OfficeAgent:
         return normalized
 
     def _router_signal_extractor(self) -> RouterSignalExtractor:
-        return RouterSignalExtractor(self, news_hints=_NEWS_HINTS)
+        return RouterSignalExtractor(
+            self,
+            news_hints=_NEWS_HINTS,
+            followup_reference_hints=_FOLLOWUP_REFERENCE_HINTS,
+            followup_transform_hints=_FOLLOWUP_TRANSFORM_HINTS,
+        )
 
     def _intent_classifier(self) -> IntentClassifier:
         return IntentClassifier(self)
 
     def _policy_router(self) -> PolicyRouter:
         return PolicyRouter(self)
-
-    def _strip_internal_route_fields(self, route: dict[str, Any]) -> dict[str, Any]:
-        cleaned = dict(route or {})
-        cleaned.pop("_signals", None)
-        cleaned.pop("_rules_intent", None)
-        return cleaned
 
     def _route_request_by_rules(
         self,
@@ -7531,67 +7072,7 @@ class OfficeAgent:
             signals=signals,
             fallback=fallback,
         )
-        route["_signals"] = signals.to_dict()
-        route["_rules_intent"] = rules_intent.to_dict()
         return route
-
-    def _run_router(
-        self,
-        *,
-        requested_model: str,
-        user_message: str,
-        summary: str,
-        attachment_metas: list[dict[str, Any]],
-        settings: ChatSettings,
-        rules_route: dict[str, Any],
-    ) -> tuple[dict[str, Any], str]:
-        base_route = self._strip_internal_route_fields(rules_route)
-        fallback = self._normalize_route_decision(base_route, fallback=base_route, settings=settings)
-
-        signals_payload = rules_route.get("_signals")
-        if isinstance(signals_payload, dict):
-            signals = RequestSignals.model_validate(signals_payload)
-        else:
-            signals = self._router_signal_extractor().extract(
-                user_message=user_message,
-                attachment_metas=attachment_metas,
-                settings=settings,
-                route_state=None,
-                inline_followup_context=False,
-            )
-
-        intent_payload = rules_route.get("_rules_intent")
-        if isinstance(intent_payload, dict):
-            fallback_intent = IntentClassification.model_validate(intent_payload)
-        else:
-            fallback_intent = self._intent_classifier().classification_from_route(fallback)
-
-        classified_intent, raw_text = self._intent_classifier().classify_with_llm(
-            requested_model=requested_model,
-            user_message=user_message,
-            summary=summary,
-            attachment_metas=attachment_metas,
-            settings=settings,
-            signals=signals,
-            fallback=fallback_intent,
-        )
-        source_override = "llm_intent_classifier"
-        if not str(classified_intent.source or "").startswith("llm"):
-            source_override = "rules_fallback"
-
-        mapped = self._policy_router().route(
-            intent=classified_intent,
-            user_message=user_message,
-            attachment_metas=attachment_metas,
-            settings=settings,
-            signals=signals,
-            fallback=fallback,
-            source_override=source_override,
-            force_disable_llm_router=True,
-        )
-        mapped["_signals"] = signals.to_dict()
-        mapped["_rules_intent"] = classified_intent.to_dict()
-        return mapped, raw_text
 
     def _route_request(
         self,
@@ -7608,33 +7089,40 @@ class OfficeAgent:
         followup_attachment_requires_tools: bool = False,
         force_tool_followup: bool = False,
     ) -> tuple[dict[str, Any], str]:
-        rules_route = self._route_request_by_rules(
+        signals = self._router_signal_extractor().extract(
             user_message=user_message,
             attachment_metas=attachment_metas,
             settings=settings,
             route_state=route_state,
             inline_followup_context=inline_followup_context,
         )
-        if not rules_route.get("needs_llm_router"):
-            final_route = self._strip_internal_route_fields(rules_route)
-            return final_route, json.dumps(
-                {
-                    "source": "rules",
-                    "task_type": final_route.get("task_type"),
-                    "primary_intent": final_route.get("primary_intent"),
-                    "execution_policy": final_route.get("execution_policy"),
-                },
-                ensure_ascii=False,
-            )
-        else:
-            route, raw = self._run_router(
-                requested_model=requested_model,
-                user_message=user_message,
-                summary=summary,
-                attachment_metas=attachment_metas,
-                settings=settings,
-                rules_route=rules_route,
-            )
+        classified_intent, raw = self._intent_classifier().classify(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            signals=signals,
+        )
+        policy_router = self._policy_router()
+        fallback = policy_router.build_fallback(
+            intent=classified_intent,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+        )
+        route = policy_router.route(
+            intent=classified_intent,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+            fallback=fallback,
+            source_override=str(classified_intent.source or ""),
+            force_disable_llm_router=True,
+        )
         route, raw = self._apply_route_runtime_overrides(
             route=route,
             router_raw=raw,
@@ -7646,7 +7134,7 @@ class OfficeAgent:
             followup_attachment_requires_tools=followup_attachment_requires_tools,
             force_tool_followup=force_tool_followup,
         )
-        return self._strip_internal_route_fields(route), raw
+        return route, raw
 
     def _apply_route_runtime_overrides(
         self,

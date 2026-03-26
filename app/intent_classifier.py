@@ -18,11 +18,61 @@ _ALLOWED_PRIMARY_INTENTS = {
 }
 
 _ALLOWED_ACTION_TYPES = {"answer", "search", "read", "modify", "create"}
+INTENT_LOW_CONFIDENCE_THRESHOLD = 0.60
+INTENT_LLM_ESCALATION_THRESHOLD = 0.80
 
 
 class IntentClassifier:
     def __init__(self, agent: Any) -> None:
         self._agent = agent
+
+    def classify(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None,
+        signals: RequestSignals,
+    ) -> tuple[IntentClassification, str]:
+        rules = self.classify_rules(
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            route_state=route_state,
+            signals=signals,
+        )
+        rules.inherited_from_state = str(signals.inherited_primary_intent or "")
+        rules.mixed_intent = self._detect_mixed_intent(rules, signals)
+
+        escalation_reasons = self._collect_escalation_reasons(rules, signals)
+        if not escalation_reasons:
+            rules.escalation_reason = ""
+            return rules, json.dumps(
+                {
+                    "source": rules.source,
+                    "reason": "rules_only",
+                    "primary_intent": rules.primary_intent,
+                    "confidence": rules.confidence,
+                },
+                ensure_ascii=False,
+            )
+
+        rules.escalation_reason = "; ".join(escalation_reasons)
+        classified, raw = self.classify_with_llm(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+            fallback=rules,
+        )
+        classified.inherited_from_state = str(signals.inherited_primary_intent or "")
+        classified.mixed_intent = self._detect_mixed_intent(classified, signals) or rules.mixed_intent
+        classified.escalation_reason = "; ".join(escalation_reasons)
+        return classified, raw
 
     def classify_rules(
         self,
@@ -159,6 +209,7 @@ class IntentClassifier:
             or signals.evidence_required
             or signals.source_trace_request
             or normalized_primary in {"evidence", "web"}
+            or (normalized_primary == "generation" and signals.grounded_code_generation_context)
         )
         requires_web = bool(signals.web_request or normalized_primary == "web")
         requires_local_lookup = bool(
@@ -238,6 +289,9 @@ class IntentClassifier:
             reason_short=str(payload.get("reason_short") or fallback.reason_short).strip(),
             source=str(payload.get("source") or source or fallback.source).strip() or source or fallback.source,
             classifier_model=str(classifier_model or payload.get("classifier_model") or fallback.classifier_model).strip(),
+            mixed_intent=bool(payload.get("mixed_intent", fallback.mixed_intent)),
+            inherited_from_state=str(payload.get("inherited_from_state") or fallback.inherited_from_state).strip(),
+            escalation_reason=str(payload.get("escalation_reason") or fallback.escalation_reason).strip(),
         )
 
     def _derive_secondary_intents(self, primary_intent: str, signals: RequestSignals) -> list[str]:
@@ -262,6 +316,14 @@ class IntentClassifier:
             add("inline_document")
         if signals.context_dependent_followup:
             add("followup_transform")
+        if signals.reference_followup_like:
+            add("reference_followup")
+        if signals.transform_followup_like:
+            add("generation_transform")
+        if signals.short_followup_like:
+            add("short_followup")
+        if primary_intent == "understanding" and signals.transform_followup_like and signals.has_attachments:
+            add("generation")
         if primary_intent == "generation" and signals.grounded_code_generation_context:
             add("grounded_generation")
 
@@ -318,3 +380,62 @@ class IntentClassifier:
         if signals.inline_followup_context:
             reasons.append("inline_followup_context=true")
         return ", ".join(reasons[:4])
+
+    def _detect_mixed_intent(self, classification: IntentClassification, signals: RequestSignals) -> bool:
+        secondary = {str(item or "").strip().lower() for item in classification.secondary_intents if str(item or "").strip()}
+        if classification.primary_intent == "understanding" and (
+            "grounded_generation" in secondary
+            or "generation" in secondary
+            or "generation_transform" in secondary
+            or (signals.transform_followup_like and (signals.has_attachments or signals.grounded_code_generation_context))
+        ):
+            return True
+        if classification.primary_intent == "understanding" and ("meeting_minutes" in secondary or signals.meeting_minutes_request):
+            return True
+        if signals.transform_followup_like and signals.reference_followup_like:
+            return True
+        if classification.primary_intent == "understanding" and signals.transform_followup_like and signals.short_followup_like:
+            return True
+        return False
+
+    def _collect_escalation_reasons(self, rules: IntentClassification, signals: RequestSignals) -> list[str]:
+        reasons: list[str] = []
+        text_len = len(str(signals.text or "").strip())
+
+        if signals.inherited_primary_intent and text_len <= 42:
+            reasons.append("inherited_state_short_followup")
+        if self._is_mixed_secondary_case(rules, signals):
+            reasons.append("mixed_secondary_intent")
+        if float(rules.confidence) < INTENT_LLM_ESCALATION_THRESHOLD:
+            reasons.append("low_rules_confidence")
+        if bool(signals.context_dependent_followup):
+            reasons.append("context_dependent_followup")
+        if bool(signals.inline_followup_context):
+            reasons.append("inline_followup_context")
+        if bool(signals.request_requires_tools) and rules.primary_intent == "standard":
+            reasons.append("standard_but_tools_required")
+        if rules.primary_intent == "generation" and bool(signals.grounded_code_generation_context):
+            reasons.append("grounded_generation")
+        if float(signals.ambiguity_score) >= 0.45:
+            reasons.append("high_ambiguity_score")
+
+        deduped: list[str] = []
+        for item in reasons:
+            if item and item not in deduped:
+                deduped.append(item)
+        return deduped
+
+    def _is_mixed_secondary_case(self, rules: IntentClassification, signals: RequestSignals) -> bool:
+        secondary = {str(item or "").strip().lower() for item in rules.secondary_intents if str(item or "").strip()}
+        if rules.primary_intent == "understanding" and (
+            "grounded_generation" in secondary
+            or "generation" in secondary
+            or "generation_transform" in secondary
+            or (signals.transform_followup_like and (signals.has_attachments or signals.grounded_code_generation_context))
+        ):
+            return True
+        if rules.primary_intent == "understanding" and "meeting_minutes" in secondary:
+            return True
+        if signals.transform_followup_like and signals.reference_followup_like:
+            return True
+        return False

@@ -43,9 +43,15 @@ class RequestSignals(BaseModel):
     grounded_code_generation_context: bool = False
     default_root_search: bool = False
     inherited_primary_intent: str = ""
+    short_followup_like: bool = False
+    transform_followup_like: bool = False
+    reference_followup_like: bool = False
+    ambiguity_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return self.model_dump()
+        payload = self.model_dump()
+        payload["ambiguity_score"] = max(0.0, min(1.0, float(payload.get("ambiguity_score") or 0.0)))
+        return payload
 
 
 class IntentClassification(BaseModel):
@@ -60,6 +66,9 @@ class IntentClassification(BaseModel):
     reason_short: str = ""
     source: str = "rules_intent_classifier"
     classifier_model: str = ""
+    mixed_intent: bool = False
+    inherited_from_state: str = ""
+    escalation_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = self.model_dump()
@@ -83,8 +92,8 @@ class RouteDecision(BaseModel):
     summary: str = ""
     source: str = "rules"
     router_model: str = ""
-    execution_policy: str = "standard_full_pipeline"
-    runtime_profile: str = "explainer"
+    execution_policy: str = "standard_safe_pipeline"
+    runtime_profile: str = "evidence"
     primary_intent: PrimaryIntent = "standard"
     secondary_intents: list[str] = Field(default_factory=list)
     requires_tools: bool = False
@@ -95,6 +104,9 @@ class RouteDecision(BaseModel):
     intent_confidence: float = 0.7
     intent_source: str = "rules_intent_classifier"
     intent_reason: str = ""
+    mixed_intent: bool = False
+    inherited_from_state: str = ""
+    escalation_reason: str = ""
     spec_lookup_request: bool = False
     evidence_required_mode: bool = False
     default_root_search: bool = False
