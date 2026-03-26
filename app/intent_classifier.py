@@ -10,7 +10,7 @@ from app.intent_constants import (
     INTENT_LOW_CONFIDENCE_THRESHOLD,
     INTENT_MARGIN_MIXED_THRESHOLD,
 )
-from app.intent_schema import ConversationFrame, IntentClassification, IntentDecision, RequestSignals
+from app.intent_schema import ConversationFrame, IntentClassification, IntentDecision, IntentScore, RequestSignals
 from app.intent_scorer import IntentScorer
 
 
@@ -65,8 +65,75 @@ class IntentClassifier:
             route_state=route_state,
             signals=signals,
         )
-        candidates = self._candidate_generator.generate(signals=signals, frame=frame)
-        decision, raw = self._scorer.decide(
+        candidates = self.generate_candidates(signals=signals, frame=frame)
+        decision, raw = self.score_decision(
+            candidates=candidates,
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            signals=signals,
+            frame=frame,
+            force_rules_only=force_rules_only,
+        )
+        decision = self.postprocess_decision(decision=decision, signals=signals)
+
+        return decision, raw
+
+    def postprocess_decision(
+        self,
+        *,
+        decision: IntentDecision,
+        signals: RequestSignals,
+    ) -> IntentDecision:
+        updated = decision
+        second_score = 0.0
+        for candidate in updated.candidates:
+            if str(candidate.intent or "").strip().lower() == str(updated.second_intent or "").strip().lower():
+                second_score = float(candidate.score or 0.0)
+                break
+
+        if not updated.inherited_from_state and signals.inherited_primary_intent:
+            updated.inherited_from_state = str(signals.inherited_primary_intent)
+        if (
+            second_score > 0.0
+            and (
+            (updated.top_intent == "understanding" and updated.second_intent in {"generation", "meeting_minutes"})
+            or ({str(updated.top_intent), str(updated.second_intent)} in ({"understanding", "generation"}, {"understanding", "meeting_minutes"}))
+            )
+        ):
+            updated.mixed_intent = True
+        if not updated.escalation_reason and updated.margin < INTENT_MARGIN_MIXED_THRESHOLD:
+            updated.escalation_reason = "small_margin"
+        if not updated.escalation_reason and float(signals.ambiguity_score) >= INTENT_HIGH_AMBIGUITY_THRESHOLD:
+            updated.escalation_reason = "high_ambiguity"
+        if not updated.escalation_reason and updated.confidence < INTENT_LLM_ESCALATION_THRESHOLD:
+            updated.escalation_reason = "low_rules_confidence"
+        return updated
+
+    def generate_candidates(
+        self,
+        *,
+        signals: RequestSignals,
+        frame: ConversationFrame,
+    ) -> list[IntentScore]:
+        return self._candidate_generator.generate(signals=signals, frame=frame)
+
+    def score_decision(
+        self,
+        *,
+        candidates: list[IntentScore],
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        signals: RequestSignals,
+        frame: ConversationFrame,
+        force_rules_only: bool = False,
+    ) -> tuple[IntentDecision, str]:
+        return self._scorer.decide(
             candidates=candidates,
             signals=signals,
             frame=frame,
@@ -77,21 +144,6 @@ class IntentClassifier:
             settings=settings,
             force_rules_only=force_rules_only,
         )
-
-        if not decision.inherited_from_state and signals.inherited_primary_intent:
-            decision.inherited_from_state = str(signals.inherited_primary_intent)
-        if (
-            (decision.top_intent == "understanding" and decision.second_intent in {"generation", "meeting_minutes"})
-            or ({str(decision.top_intent), str(decision.second_intent)} in ({"understanding", "generation"}, {"understanding", "meeting_minutes"}))
-        ):
-            decision.mixed_intent = True
-        if not decision.escalation_reason and decision.margin < INTENT_MARGIN_MIXED_THRESHOLD:
-            decision.escalation_reason = "small_margin"
-        if not decision.escalation_reason and float(signals.ambiguity_score) >= INTENT_HIGH_AMBIGUITY_THRESHOLD:
-            decision.escalation_reason = "high_ambiguity"
-        if not decision.escalation_reason and decision.confidence < INTENT_LLM_ESCALATION_THRESHOLD:
-            decision.escalation_reason = "low_rules_confidence"
-        return decision, raw
 
     def classify(
         self,
@@ -130,7 +182,7 @@ class IntentClassifier:
             route_state=route_state,
             signals=signals,
         )
-        candidates = self._candidate_generator.generate(signals=signals, frame=frame)
+        candidates = self.generate_candidates(signals=signals, frame=frame)
         decision = self._scorer.decide_rules_only(candidates=candidates, signals=signals, frame=frame)
         return self._decision_to_classification(decision=decision, signals=signals)
 

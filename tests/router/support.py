@@ -4,27 +4,28 @@ from typing import Any
 
 from app.intent_classifier import IntentClassifier
 from app.policy_router import PolicyRouter
+from app.route_trace import build_route_trace
 from app.route_verifier import RouteVerifier
 from app.router_signals import RouterSignalExtractor
 
 
-class _StubSettings:
+class StubSettings:
     def __init__(self, *, enable_tools: bool = True) -> None:
         self.enable_tools = enable_tools
 
 
-class _StubAuthManager:
+class StubAuthManager:
     def auth_summary(self) -> dict[str, Any]:
         return {"available": False, "reason": "stub_no_llm"}
 
 
-class _StubAgent:
+class StubAgent:
     def __init__(self) -> None:
-        self._auth_manager = _StubAuthManager()
+        self._auth_manager = StubAuthManager()
 
     def _looks_like_context_dependent_followup(self, text: str) -> bool:
         lowered = str(text or "").strip().lower()
-        markers = ("继续", "刚才", "改成", "翻成", "再", "按刚才")
+        markers = ("继续", "刚才", "改成", "翻成", "再", "按刚才", "continue", "rewrite", "shorter")
         return any(marker in lowered for marker in markers)
 
     def _looks_like_spec_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
@@ -34,7 +35,7 @@ class _StubAgent:
     def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         _ = attachment_metas
         lowered = str(user_message or "").lower()
-        return any(marker in lowered for marker in ("证据", "出处", "来源", "依据"))
+        return any(marker in lowered for marker in ("证据", "出处", "来源", "依据", "source", "evidence"))
 
     def _attachment_needs_tooling(self, meta: dict[str, Any]) -> bool:
         return bool(meta.get("needs_tooling"))
@@ -47,21 +48,22 @@ class _StubAgent:
 
     def _looks_like_understanding_request(self, user_message: str) -> bool:
         lowered = str(user_message or "").lower()
-        return any(marker in lowered for marker in ("解释", "说明", "总结", "整体"))
+        return any(marker in lowered for marker in ("解释", "说明", "总结", "整体", "explain", "summarize"))
 
     def _looks_like_holistic_document_explanation_request(self, user_message: str) -> bool:
         lowered = str(user_message or "").lower()
-        return any(marker in lowered for marker in ("整体", "全文"))
+        return any(marker in lowered for marker in ("整体", "全文", "full doc"))
 
     def _looks_like_source_trace_request(self, user_message: str) -> bool:
         lowered = str(user_message or "").lower()
-        return any(marker in lowered for marker in ("出处", "来源", "依据"))
+        return any(marker in lowered for marker in ("出处", "来源", "依据", "source", "evidence"))
 
     def _looks_like_explicit_tool_confirmation(self, user_message: str) -> bool:
-        return str(user_message or "").strip() in {"继续", "执行", "可以"}
+        return str(user_message or "").strip().lower() in {"继续", "执行", "可以", "continue", "go ahead"}
 
     def _looks_like_meeting_minutes_request(self, user_message: str) -> bool:
-        return "会议纪要" in str(user_message or "")
+        lowered = str(user_message or "").lower()
+        return "会议纪要" in lowered or "meeting minutes" in lowered
 
     def _looks_like_internal_ticket_reference(self, user_message: str) -> bool:
         return "jira" in str(user_message or "").lower()
@@ -81,13 +83,15 @@ class _StubAgent:
             "修改",
             "修复",
             "代码",
+            "find",
+            "lookup",
         )
         return any(marker in lowered for marker in markers)
 
     def _looks_like_local_code_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         _ = attachment_metas
         lowered = str(user_message or "").lower()
-        return any(marker in lowered for marker in ("函数", "repo", "代码"))
+        return any(marker in lowered for marker in ("函数", "repo", "代码", "function", "file"))
 
     def _message_has_explicit_local_path(self, user_message: str) -> bool:
         lowered = str(user_message or "").lower()
@@ -113,19 +117,18 @@ class _StubAgent:
 
     def _looks_like_write_or_edit_action(self, text: str) -> bool:
         lowered = str(text or "").lower()
-        markers = ("改", "修改", "改成", "翻成", "写成", "重写", "修复", "邮件")
+        markers = ("改", "修改", "改成", "翻成", "写成", "重写", "修复", "邮件", "write", "rewrite", "translate", "patch", "edit", "fix")
         return any(marker in lowered for marker in markers)
 
 
-
-def _build_layers(*, enable_tools: bool = True):
-    agent = _StubAgent()
-    settings = _StubSettings(enable_tools=enable_tools)
+def build_layers(*, enable_tools: bool = True):
+    agent = StubAgent()
+    settings = StubSettings(enable_tools=enable_tools)
     extractor = RouterSignalExtractor(
         agent,
         news_hints=("news", "新闻", "今日", "today"),
-        followup_reference_hints=("这个", "刚才", "上一个", "上一版", "按刚才", "继续"),
-        followup_transform_hints=("改成", "翻成", "写成", "表格", "邮件", "修复", "判断"),
+        followup_reference_hints=("这个", "刚才", "上一个", "上一版", "按刚才", "继续", "that", "this", "previous"),
+        followup_transform_hints=("改成", "翻成", "写成", "表格", "邮件", "修复", "判断", "rewrite", "translate"),
     )
     classifier = IntentClassifier(agent)
     policy_router = PolicyRouter(agent)
@@ -133,16 +136,16 @@ def _build_layers(*, enable_tools: bool = True):
     return settings, extractor, classifier, policy_router, verifier
 
 
-
-def _run_pipeline(
+def run_pipeline(
     *,
     message: str,
     attachments: list[dict[str, Any]] | None = None,
     route_state: dict[str, Any] | None = None,
     inline_followup_context: bool = False,
     enable_tools: bool = True,
+    force_rules_only: bool = False,
 ):
-    settings, extractor, classifier, policy_router, verifier = _build_layers(enable_tools=enable_tools)
+    settings, extractor, classifier, policy_router, verifier = build_layers(enable_tools=enable_tools)
     attachment_metas = list(attachments or [])
 
     signals = extractor.extract(
@@ -157,15 +160,22 @@ def _run_pipeline(
         route_state=route_state,
         signals=signals,
     )
-    decision, raw = classifier.classify_decision(
+    candidates = classifier.generate_candidates(
+        signals=signals,
+        frame=frame,
+    )
+    decision, raw = classifier.score_decision(
+        candidates=candidates,
         requested_model="gpt-test",
         user_message=message,
         summary="",
         attachment_metas=attachment_metas,
         settings=settings,
-        route_state=route_state,
         signals=signals,
+        frame=frame,
+        force_rules_only=force_rules_only,
     )
+    decision = classifier.postprocess_decision(decision=decision, signals=signals)
     fallback = policy_router.build_fallback_from_decision(
         decision=decision,
         frame=frame,
@@ -187,79 +197,24 @@ def _run_pipeline(
         signals=signals,
         frame=frame,
     )
-    return signals, frame, decision, route, raw, notes
-
-
-
-def test_followup_transform_inherits_frame_and_avoids_standard() -> None:
-    _, frame, decision, route, _, _ = _run_pipeline(
-        message="继续，按刚才那个改成日文邮件",
-        route_state={
-            "primary_intent": "understanding",
-            "active_entities": ["设计摘要"],
-            "execution_policy": "understanding_direct",
-        },
-        inline_followup_context=True,
+    trace = build_route_trace(
+        request_id="test-request",
+        timestamp="2026-03-27T00:00:00+00:00",
+        user_message=message,
+        signals=signals,
+        frame=frame,
+        decision=decision,
+        route=route,
+        runtime_override_notes=[],
+        runtime_override_actions=[],
     )
-    assert frame.dominant_intent == "understanding"
-    assert decision.inherited_from_state == "understanding"
-    assert route["execution_policy"] == "followup_transform_pipeline"
-    assert route["task_type"] == "followup_transform"
-    assert route["use_planner"] is True
-
-
-
-def test_mixed_intent_attachment_to_table_and_email_uses_mixed_pipeline() -> None:
-    _, _, decision, route, _, _ = _run_pipeline(
-        message="解释这个附件，再整理成表格后写成邮件",
-        attachments=[{"inline_parseable": True, "needs_tooling": False}],
-    )
-    assert decision.mixed_intent is True
-    assert route["execution_policy"] == "mixed_intent_planner_pipeline"
-    assert route["use_planner"] is True
-
-
-
-def test_evidence_plus_repo_fix_has_competing_candidates_and_escalation() -> None:
-    _, _, decision, route, _, _ = _run_pipeline(
-        message="帮我查这个结论出处，并按 repo 代码给个修复建议",
-    )
-    scores = {item.intent: float(item.score) for item in decision.candidates}
-    assert scores.get("evidence", 0.0) > 0.0
-    assert scores.get("generation", 0.0) > 0.0
-    assert decision.margin < 0.12
-    assert decision.escalation_reason in {"llm_unavailable", "margin_or_ambiguity_or_followup_transform", "small_margin"}
-    assert route["use_planner"] is True
-
-
-
-def test_low_confidence_short_input_goes_to_clarifying_safe_route() -> None:
-    _, _, decision, route, _, _ = _run_pipeline(message="嗯")
-    assert decision.confidence < 0.60
-    assert route["execution_policy"] == "standard_safe_pipeline"
-    assert route["use_planner"] is True
-    assert route["use_reviewer"] is True
-
-
-
-def test_repo_function_and_modify_prefers_grounded_generation_pipeline() -> None:
-    _, _, decision, route, _, _ = _run_pipeline(
-        message="帮我看这个 repo 里的函数，并改一下实现",
-    )
-    candidates = [item.intent for item in decision.candidates[:3]]
-    assert "code_lookup" in candidates or decision.second_intent == "code_lookup"
-    assert "generation" in candidates or decision.top_intent == "generation"
-    assert route["execution_policy"] == "grounded_generation_pipeline"
-    assert route["use_reviewer"] is True
-    assert route["use_revision"] is True
-
-
-
-def test_web_news_with_three_judgements_keeps_web_pipeline_with_review() -> None:
-    _, _, decision, route, _, _ = _run_pipeline(
-        message="今天 AI 新闻有什么，顺便给个三点判断",
-    )
-    assert decision.top_intent == "web"
-    assert route["execution_policy"] == "web_research_full_pipeline"
-    assert route["use_planner"] is True
-    assert route["use_reviewer"] is True
+    return {
+        "signals": signals,
+        "frame": frame,
+        "candidates": candidates,
+        "decision": decision,
+        "route": route,
+        "raw": raw,
+        "notes": notes,
+        "trace": trace,
+    }

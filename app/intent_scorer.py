@@ -55,12 +55,17 @@ class IntentScorer:
             frame=frame,
         )
 
-        needs_llm = bool(
-            margin < INTENT_MARGIN_MIXED_THRESHOLD
-            or float(signals.ambiguity_score) >= INTENT_HIGH_AMBIGUITY_THRESHOLD
-            or (signals.transform_followup_like and signals.reference_followup_like)
-            or frame.pending_transform == "rewrite_or_transform"
+        needs_llm, escalation_reason = self._should_escalate_to_llm(
+            ranked=ranked,
+            top=top,
+            second=second,
+            margin=margin,
+            signals=signals,
+            frame=frame,
+            rules_decision=rules_decision,
         )
+        if escalation_reason:
+            rules_decision = rules_decision.model_copy(update={"escalation_reason": escalation_reason})
         if force_rules_only:
             needs_llm = False
         if not needs_llm:
@@ -71,6 +76,7 @@ class IntentScorer:
                     "second_intent": rules_decision.second_intent,
                     "confidence": rules_decision.confidence,
                     "margin": rules_decision.margin,
+                    "escalation_reason": rules_decision.escalation_reason,
                 },
                 ensure_ascii=False,
             )
@@ -122,7 +128,7 @@ class IntentScorer:
         if top_intent not in _ALLOWED_INTENTS:
             top_intent = "standard"
         second_intent = str(second.intent or "").strip().lower()
-        if second_intent not in _ALLOWED_INTENTS:
+        if second_intent not in _ALLOWED_INTENTS or float(second.score) <= 0.0:
             second_intent = ""
 
         requires_tools = bool(
@@ -135,7 +141,13 @@ class IntentScorer:
             signals.source_trace_request
             or signals.spec_lookup_request
             or signals.evidence_required
-            or (top_intent == "generation" and signals.grounded_code_generation_context)
+            or (
+                signals.grounded_code_generation_context
+                and (
+                    top_intent == "generation"
+                    or (second_intent == "generation" and signals.transform_followup_like)
+                )
+            )
             or top_intent in {"evidence", "web"}
         )
         requires_web = bool(signals.web_request or top_intent == "web")
@@ -151,16 +163,50 @@ class IntentScorer:
             requires_tools=requires_tools,
             grounded_generation=signals.grounded_code_generation_context,
         )
+        second_has_signal = float(second.score) > 0.0
         mixed_intent = bool(
-            (top_intent == "understanding" and second_intent in {"generation", "meeting_minutes"})
-            or ({top_intent, second_intent} == {"understanding", "generation"})
-            or ({top_intent, second_intent} == {"understanding", "meeting_minutes"})
-            or ({top_intent, second_intent} == {"evidence", "generation"})
+            second_has_signal
+            and (
+                (top_intent == "understanding" and second_intent in {"generation", "meeting_minutes"})
+                or ({top_intent, second_intent} == {"understanding", "generation"})
+                or ({top_intent, second_intent} == {"understanding", "meeting_minutes"})
+                or ({top_intent, second_intent} == {"evidence", "generation"})
+                or (
+                    {top_intent, second_intent} == {"code_lookup", "generation"}
+                    and bool(signals.transform_followup_like)
+                )
+            )
         )
         confidence = max(0.0, min(1.0, float(top.score)))
+        text_value = str(signals.text or "").strip()
+        very_short_ambiguous = bool(
+            (
+                len(text_value) <= 6
+                or (signals.reference_followup_like and len(text_value) <= 16)
+            )
+            and str(signals.inherited_primary_intent or frame.dominant_intent or "").strip().lower() in {"", "standard"}
+            and not any(
+                (
+                    signals.understanding_request,
+                    signals.source_trace_request,
+                    signals.spec_lookup_request,
+                    signals.web_request,
+                    signals.local_code_lookup_request,
+                    signals.meeting_minutes_request,
+                )
+            )
+        )
+        has_nonstandard_inheritance = str(signals.inherited_primary_intent or frame.dominant_intent or "").strip().lower() not in {
+            "",
+            "standard",
+        }
         requires_clarifying_route = bool(
             confidence < INTENT_LOW_CONFIDENCE_THRESHOLD
-            and float(signals.ambiguity_score) >= INTENT_HIGH_AMBIGUITY_THRESHOLD
+            and not has_nonstandard_inheritance
+            and (
+                float(signals.ambiguity_score) >= INTENT_HIGH_AMBIGUITY_THRESHOLD
+                or very_short_ambiguous
+            )
         )
 
         reason_short = f"rules_top={top_intent}, margin={margin:.2f}, ambiguity={float(signals.ambiguity_score):.2f}"
@@ -281,9 +327,9 @@ class IntentScorer:
                 action_type=action_type,
                 reason_short=str(parsed.get("reason_short") or rules_decision.reason_short).strip(),
                 source="llm",
-                classifier_model=str(effective_model or "").strip(),
-                escalation_reason="margin_or_ambiguity_or_followup_transform",
-            )
+            classifier_model=str(effective_model or "").strip(),
+            escalation_reason=rules_decision.escalation_reason or "llm_escalated",
+        )
             if notes:
                 extras = self._agent._normalize_string_list(notes, limit=2, item_limit=120)
                 if extras:
@@ -316,6 +362,38 @@ class IntentScorer:
         except Exception:
             score = float(fallback)
         return max(0.0, min(1.0, score))
+
+    def _should_escalate_to_llm(
+        self,
+        *,
+        ranked: list[IntentScore],
+        top: IntentScore,
+        second: IntentScore,
+        margin: float,
+        signals: RequestSignals,
+        frame: ConversationFrame,
+        rules_decision: IntentDecision,
+    ) -> tuple[bool, str]:
+        intents = {str(top.intent or "").strip().lower(), str(second.intent or "").strip().lower()}
+        if margin < INTENT_MARGIN_MIXED_THRESHOLD:
+            return True, "small_margin"
+        if float(signals.ambiguity_score) >= INTENT_HIGH_AMBIGUITY_THRESHOLD:
+            return True, "high_ambiguity"
+        if signals.transform_followup_like and signals.reference_followup_like:
+            return True, "followup_transform_competition"
+        if frame.pending_transform == "rewrite_or_transform":
+            return True, "followup_pending_transform"
+        if signals.short_followup_like and str(rules_decision.inherited_from_state or "").strip():
+            return True, "short_followup_inherited_intent"
+        if signals.grounded_code_generation_context and intents == {"code_lookup", "generation"}:
+            return True, "grounded_generation_code_lookup_competition"
+        if signals.grounded_code_generation_context and intents == {"evidence", "generation"}:
+            return True, "grounded_generation_evidence_competition"
+        if signals.request_requires_tools and rules_decision.top_intent == "standard":
+            return True, "tools_required_but_standard"
+        if ranked and float(top.score) < INTENT_MARGIN_MIXED_THRESHOLD:
+            return True, "low_rules_signal"
+        return False, ""
 
     def _infer_action_type(self, *, top_intent: str, requires_tools: bool, grounded_generation: bool) -> str:
         if top_intent in {"evidence", "web"}:

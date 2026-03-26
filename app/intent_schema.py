@@ -148,6 +148,7 @@ class RouteDecision(BaseModel):
     frame_dominant_intent: str = ""
     route_verified: bool = False
     verifier_notes: list[str] = Field(default_factory=list)
+    verifier_actions: list[str] = Field(default_factory=list)
     spec_lookup_request: bool = False
     evidence_required_mode: bool = False
     default_root_search: bool = False
@@ -157,3 +158,40 @@ class RouteDecision(BaseModel):
         payload["intent_confidence"] = max(0.0, min(1.0, float(payload.get("intent_confidence") or 0.0)))
         payload["intent_margin"] = max(0.0, min(1.0, float(payload.get("intent_margin") or 0.0)))
         return payload
+
+
+class DecisionTrace(BaseModel):
+    user_message_excerpt: str = ""
+    signal_summary: dict[str, Any] = Field(default_factory=dict)
+    frame_summary: dict[str, Any] = Field(default_factory=dict)
+    intent_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    top_intent: str = "standard"
+    second_intent: str = ""
+    confidence: float = 0.0
+    margin: float = 0.0
+    ambiguity_score: float = 0.0
+    mixed_intent: bool = False
+    requires_clarifying_route: bool = False
+    requires_tools: bool = False
+    requires_grounding: bool = False
+    requires_web: bool = False
+    requires_local_lookup: bool = False
+    llm_escalated: bool = False
+    classifier_model: str = ""
+    decision_source: str = "rules"
+    escalation_reason: str = ""
+
+
+class RouteTrace(DecisionTrace):
+    request_id: str = ""
+    timestamp: str = ""
+    chosen_execution_policy: str = "standard_safe_pipeline"
+    chosen_runtime_profile: str = "evidence"
+    planner_enabled: bool = False
+    reviewer_enabled: bool = False
+    revision_enabled: bool = False
+    verifier_notes: list[str] = Field(default_factory=list)
+    verifier_actions: list[str] = Field(default_factory=list)
+    route_verified: bool = False
+    runtime_override_notes: list[str] = Field(default_factory=list)
+    runtime_override_actions: list[str] = Field(default_factory=list)

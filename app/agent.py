@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field as dc_field, fields as dataclass_fields, is_dataclass, replace
+from datetime import datetime, timezone
 import json
+import logging
 import os
 import re
 import threading
 import tempfile
 import time
+from uuid import uuid4
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse, urlunparse
@@ -101,7 +104,9 @@ from app.core.kernel_debug_support import (
 )
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
+from app.intent_schema import RouteTrace
 from app.policy_router import PolicyRouter
+from app.route_trace import build_route_trace, route_trace_payload
 from app.route_verifier import RouteVerifier
 from app.evolution import EvolutionStore
 from app.models import AgentPanel, ChatSettings, ToolEvent
@@ -447,6 +452,9 @@ _INITIAL_CONTENT_TRIAGE_HINTS = (
     "can you make sense",
 )
 
+_ROUTE_TRACE_ENV = "OFFICETOOL_ROUTE_TRACE"
+_route_trace_logger = logging.getLogger("officetool.router")
+
 @dataclass
 class ExecutionState:
     task_type: str = "standard"
@@ -457,6 +465,13 @@ class ExecutionState:
     max_attempts: int = 24
     status: str = "initialized"
     transitions: list[str] = dc_field(default_factory=list)
+
+
+@dataclass
+class RoutePipelineResult:
+    route: dict[str, Any]
+    router_raw: str
+    trace: RouteTrace
 
 
 class RunShellArgs(BaseModel):
@@ -1190,7 +1205,7 @@ class OfficeAgent:
             fallback={"task_type": "simple_understanding"},
             settings=ChatSettings(enable_tools=True, response_style="short"),
         )
-        route, raw = self._apply_route_runtime_overrides(
+        route, raw, notes, actions = self._apply_route_runtime_overrides(
             route=base_route,
             router_raw='{"source":"rules"}',
             user_message="请解释这个设计文档的整体思路",
@@ -1208,7 +1223,7 @@ class OfficeAgent:
             followup_attachment_requires_tools=False,
             force_tool_followup=False,
         )
-        return {"route": route, "router_raw": raw}
+        return {"route": route, "router_raw": raw, "runtime_override_notes": notes, "runtime_override_actions": actions}
 
     def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
         base_route = self._normalize_route_decision(
@@ -1230,7 +1245,7 @@ class OfficeAgent:
             fallback={"task_type": "simple_qa"},
             settings=ChatSettings(enable_tools=True, response_style="short"),
         )
-        route, raw = self._apply_route_runtime_overrides(
+        route, raw, notes, actions = self._apply_route_runtime_overrides(
             route=base_route,
             router_raw='{"source":"rules"}',
             user_message="继续，直接去搜代码并执行",
@@ -1241,7 +1256,7 @@ class OfficeAgent:
             followup_attachment_requires_tools=False,
             force_tool_followup=True,
         )
-        return {"route": route, "router_raw": raw}
+        return {"route": route, "router_raw": raw, "runtime_override_notes": notes, "runtime_override_actions": actions}
 
     def _debug_kernel_shadow_package_syncs_module_version(self) -> dict[str, Any]:
         return debug_kernel_shadow_package_syncs_module_version_helper(self)
@@ -6643,87 +6658,13 @@ class OfficeAgent:
         )
 
     def _task_type_to_primary_intent(self, task_type: str) -> str:
-        normalized = str(task_type or "").strip().lower()
-        mapping = {
-            "understanding": "understanding",
-            "simple_understanding": "understanding",
-            "inline_document_understanding": "understanding",
-            "attachment_tooling": "understanding",
-            "attachment_understanding": "understanding",
-            "mixed_attachment": "understanding",
-            "evidence_lookup": "evidence",
-            "web_news": "web",
-            "web_research": "web",
-            "code_lookup": "code_lookup",
-            "grounded_generation": "generation",
-            "grounded_code_generation": "generation",
-            "generation": "generation",
-            "code_generation": "generation",
-            "mixed_intent": "standard",
-            "followup_transform": "standard",
-            "meeting_minutes": "meeting_minutes",
-            "simple_qa": "qa",
-            "general_qa": "qa",
-        }
-        return mapping.get(normalized, "standard")
+        return self._policy_router().task_type_to_primary_intent(task_type)
 
     def _task_type_to_execution_policy(self, task_type: str) -> str:
-        normalized = str(task_type or "").strip().lower()
-        mapping = {
-            "understanding": "understanding_direct",
-            "simple_understanding": "understanding_direct",
-            "inline_document_understanding": "inline_document_understanding_direct",
-            "attachment_tooling": "attachment_tooling_generic",
-            "attachment_understanding": "attachment_holistic_understanding_with_tools",
-            "mixed_attachment": "llm_router_attachment_ambiguity",
-            "evidence_lookup": "evidence_full_pipeline",
-            "web_news": "web_news_brief",
-            "web_research": "web_research_full_pipeline",
-            "code_lookup": "code_lookup_with_tools",
-            "grounded_generation": "grounded_generation_pipeline",
-            "grounded_code_generation": "grounded_generation_with_tools",
-            "generation": "direct_generation",
-            "code_generation": "generation_with_tools",
-            "mixed_intent": "mixed_intent_planner_pipeline",
-            "followup_transform": "followup_transform_pipeline",
-            "meeting_minutes": "meeting_minutes_output",
-            "simple_qa": "qa_direct",
-            "general_qa": "llm_router_general_ambiguity",
-            "standard": "standard_safe_pipeline",
-        }
-        return mapping.get(normalized, "standard_safe_pipeline")
-
-    def _default_execution_policy_for_intent(self, primary_intent: str) -> str:
-        normalized = str(primary_intent or "").strip().lower()
-        mapping = {
-            "understanding": "understanding_direct",
-            "evidence": "evidence_full_pipeline",
-            "web": "web_research_full_pipeline",
-            "code_lookup": "code_lookup_with_tools",
-            "generation": "direct_generation",
-            "meeting_minutes": "meeting_minutes_pipeline",
-            "qa": "qa_direct",
-            "standard": "standard_safe_pipeline",
-        }
-        return mapping.get(normalized, "standard_safe_pipeline")
+        return self._policy_router().task_type_to_execution_policy(task_type)
 
     def _normalize_primary_intent(self, value: str, *, task_type: str = "") -> str:
-        normalized = str(value or "").strip().lower()
-        allowed = {
-            "understanding",
-            "evidence",
-            "web",
-            "code_lookup",
-            "generation",
-            "meeting_minutes",
-            "qa",
-            "standard",
-        }
-        if normalized in allowed:
-            return normalized
-        if task_type:
-            return self._task_type_to_primary_intent(task_type)
-        return "standard"
+        return self._policy_router().normalize_primary_intent(value, task_type=task_type)
 
     def _build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
         task_type = str(route.get("task_type") or "standard").strip().lower()
@@ -6778,96 +6719,6 @@ class OfficeAgent:
             return last_intent
         return ""
 
-    def _classify_primary_intent(
-        self,
-        *,
-        user_message: str,
-        attachment_metas: list[dict[str, Any]],
-        route_state: dict[str, Any] | None,
-        signals: dict[str, Any],
-    ) -> str:
-        if (
-            signals.get("inline_followup_context")
-            and signals.get("context_dependent_followup")
-            and not signals.get("has_attachments")
-            and not signals.get("web_request")
-            and not signals.get("local_code_lookup_request")
-            and not self._message_has_explicit_local_path(user_message)
-            and not self._looks_like_write_or_edit_action(signals.get("text") or "")
-        ):
-            return "understanding"
-        if self._looks_like_code_generation_request(user_message, attachment_metas):
-            return "generation"
-        if signals.get("has_attachments") and signals.get("source_trace_request"):
-            return "evidence"
-        if (
-            signals.get("meeting_minutes_request")
-            and not signals.get("spec_lookup_request")
-            and not signals.get("evidence_required")
-            and not signals.get("web_request")
-        ):
-            return "meeting_minutes"
-        if signals.get("has_attachments") and signals.get("holistic_document_explanation") and not signals.get("web_request"):
-            return "understanding"
-        if (
-            signals.get("has_attachments")
-            and signals.get("understanding_request")
-            and not signals.get("spec_lookup_request")
-            and not signals.get("evidence_required")
-            and not signals.get("web_request")
-        ):
-            return "understanding"
-        if signals.get("web_request") and not signals.get("has_attachments"):
-            return "web"
-        if signals.get("spec_lookup_request") or signals.get("evidence_required"):
-            return "evidence"
-        if signals.get("local_code_lookup_request"):
-            return "code_lookup"
-        inherited = str(signals.get("inherited_primary_intent") or "").strip() or self._infer_followup_primary_intent_from_state(
-            user_message=user_message,
-            route_state=route_state,
-            signals=signals,
-        )
-        if inherited:
-            return inherited
-        if (
-            signals.get("has_attachments")
-            and signals.get("inline_parseable_attachments")
-            and signals.get("understanding_request")
-            and not signals.get("attachment_needs_tooling")
-        ):
-            return "understanding"
-        if (
-            not signals.get("has_attachments")
-            and signals.get("inline_document_payload")
-            and not signals.get("request_requires_tools")
-        ):
-            return "understanding"
-        if (
-            not signals.get("has_attachments")
-            and not signals.get("request_requires_tools")
-            and not signals.get("understanding_request")
-            and len(str(signals.get("text") or "")) <= 240
-        ):
-            return "qa"
-        if signals.get("attachment_needs_tooling"):
-            return "understanding"
-        return "standard"
-
-    def _resolve_execution_policy(
-        self,
-        *,
-        primary_intent: str,
-        user_message: str,
-        attachment_metas: list[dict[str, Any]],
-        settings: ChatSettings,
-        signals: dict[str, Any],
-        fallback: dict[str, Any],
-    ) -> dict[str, Any]:
-        # Deprecated: policy decisions are produced by app/policy_router.py.
-        del primary_intent, user_message, attachment_metas, signals
-        return self._normalize_route_decision(fallback, fallback=fallback, settings=settings)
-
     def _normalize_route_decision(
         self,
         route: dict[str, Any],
@@ -6906,92 +6757,11 @@ class OfficeAgent:
         fallback: dict[str, Any],
         settings: ChatSettings,
     ) -> dict[str, Any]:
-        normalized = dict(fallback)
-        normalized.update(route or {})
-
-        normalized["task_type"] = str(normalized.get("task_type") or fallback.get("task_type") or "standard").strip()
-        complexity = str(normalized.get("complexity") or fallback.get("complexity") or "medium").strip().lower()
-        if complexity not in {"low", "medium", "high"}:
-            complexity = "medium"
-        normalized["complexity"] = complexity
-        normalized["specialists"] = self._normalize_specialists(
-            normalized.get("specialists") or fallback.get("specialists") or []
+        return self._policy_router().normalize_route(
+            route=route,
+            fallback=fallback,
+            settings=settings,
         )
-        normalized["primary_intent"] = self._normalize_primary_intent(
-            str(normalized.get("primary_intent") or fallback.get("primary_intent") or ""),
-            task_type=normalized["task_type"],
-        )
-        normalized["execution_policy"] = (
-            str(normalized.get("execution_policy") or fallback.get("execution_policy") or "").strip()
-            or self._task_type_to_execution_policy(normalized["task_type"])
-        )
-        normalized["runtime_profile"] = (
-            str(normalized.get("runtime_profile") or fallback.get("runtime_profile") or "").strip()
-            or default_runtime_profile_for_route(normalized)
-        )
-
-        for key in (
-            "use_planner",
-            "use_worker_tools",
-            "use_reviewer",
-            "use_revision",
-            "use_structurer",
-            "use_web_prefetch",
-            "use_conflict_detector",
-            "needs_llm_router",
-        ):
-            normalized[key] = bool(normalized.get(key))
-
-        raw_spec_lookup_request = bool(normalized.get("spec_lookup_request"))
-        raw_evidence_required_mode = bool(normalized.get("evidence_required_mode"))
-        raw_default_root_search = bool(normalized.get("default_root_search"))
-
-        if not settings.enable_tools:
-            normalized["use_worker_tools"] = False
-            normalized["use_web_prefetch"] = False
-
-        policy_spec = execution_policy_spec(normalized["execution_policy"])
-        normalized["use_planner"] = planner_enabled_for_policy(
-            normalized["execution_policy"],
-            use_worker_tools=bool(normalized["use_worker_tools"]),
-        )
-        normalized["use_reviewer"] = policy_spec.reviewer
-        normalized["use_revision"] = policy_spec.revision
-        normalized["use_structurer"] = policy_spec.structurer
-        normalized["use_conflict_detector"] = policy_spec.conflict_detector
-
-        if not normalized["use_worker_tools"]:
-            normalized["use_web_prefetch"] = False
-
-        route_task_type = str(normalized.get("task_type") or "").strip().lower()
-        normalized["spec_lookup_request"] = raw_spec_lookup_request and route_task_type == "evidence_lookup"
-        normalized["evidence_required_mode"] = (
-            raw_evidence_required_mode
-            and route_task_type == "evidence_lookup"
-            and bool(normalized["use_worker_tools"])
-        )
-        normalized["default_root_search"] = raw_default_root_search and bool(normalized["use_worker_tools"])
-        review_chain_required = bool(
-            normalized["spec_lookup_request"]
-            or normalized["evidence_required_mode"]
-            or route_task_type in {"evidence_lookup", "web_research", "grounded_generation", "mixed_intent"}
-            or str(normalized.get("execution_policy") or "").strip().lower()
-            in {"grounded_generation_pipeline", "mixed_intent_planner_pipeline"}
-        )
-        if not review_chain_required:
-            normalized["use_reviewer"] = False
-            normalized["use_revision"] = False
-            normalized["use_structurer"] = False
-            normalized["use_conflict_detector"] = False
-
-        normalized["reason"] = str(normalized.get("reason") or fallback.get("reason") or "").strip()
-        normalized["source"] = str(normalized.get("source") or fallback.get("source") or "rules").strip() or "rules"
-        normalized["summary"] = (
-            str(normalized.get("summary") or "").strip()
-            or f"task_type={normalized['task_type']}, complexity={normalized['complexity']}"
-        )
-        normalized["router_model"] = str(normalized.get("router_model") or "").strip()
-        return normalized
 
     def _router_signal_extractor(self) -> RouterSignalExtractor:
         return RouterSignalExtractor(
@@ -7066,50 +6836,16 @@ class OfficeAgent:
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
     ) -> dict[str, Any]:
-        signals = self._router_signal_extractor().extract(
-            user_message=user_message,
-            attachment_metas=attachment_metas,
-            settings=settings,
-            route_state=route_state,
-            inline_followup_context=inline_followup_context,
-        )
-        classifier = self._intent_classifier()
-        frame = classifier.resolve_frame(
-            user_message=user_message,
-            route_state=route_state,
-            signals=signals,
-        )
-        decision, _ = classifier.classify_decision(
+        return self._run_route_pipeline(
             requested_model="",
             user_message=user_message,
             summary="",
             attachment_metas=attachment_metas,
             settings=settings,
             route_state=route_state,
-            signals=signals,
+            inline_followup_context=inline_followup_context,
             force_rules_only=True,
-        )
-        policy_router = self._policy_router()
-        fallback = policy_router.build_fallback_from_decision(
-            decision=decision,
-            frame=frame,
-            settings=settings,
-            signals=signals,
-        )
-        route = policy_router.route_from_decision(
-            decision=decision,
-            frame=frame,
-            settings=settings,
-            signals=signals,
-            fallback=fallback,
-        )
-        route, _ = self._route_verifier().verify(
-            decision=decision,
-            route=route,
-            signals=signals,
-            frame=frame,
-        )
-        return route
+        ).route
 
     def _route_request(
         self,
@@ -7126,6 +6862,45 @@ class OfficeAgent:
         followup_attachment_requires_tools: bool = False,
         force_tool_followup: bool = False,
     ) -> tuple[dict[str, Any], str]:
+        result = self._run_route_pipeline(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            inline_followup_context=inline_followup_context,
+            attachment_issues=attachment_issues or [],
+            followup_has_attachments=followup_has_attachments,
+            followup_attachment_requires_tools=followup_attachment_requires_tools,
+            force_tool_followup=force_tool_followup,
+        )
+        return result.route, result.router_raw
+
+    # Routing responsibilities in agent.py are intentionally narrow:
+    # - dependency wiring
+    # - orchestration
+    # - execution lifecycle handoff
+    # - compatibility shim entrypoints
+    def _run_route_pipeline(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+        force_rules_only: bool = False,
+        attachment_issues: list[str] | None = None,
+        followup_has_attachments: bool = False,
+        followup_attachment_requires_tools: bool = False,
+        force_tool_followup: bool = False,
+    ) -> RoutePipelineResult:
+        request_id = f"route_{uuid4().hex}"
+        timestamp = datetime.now(timezone.utc).isoformat()
+
         signals = self._router_signal_extractor().extract(
             user_message=user_message,
             attachment_metas=attachment_metas,
@@ -7139,38 +6914,49 @@ class OfficeAgent:
             route_state=route_state,
             signals=signals,
         )
-        intent_decision, raw = classifier.classify_decision(
+        candidates = classifier.generate_candidates(
+            signals=signals,
+            frame=frame,
+        )
+        decision, raw = classifier.score_decision(
+            candidates=candidates,
             requested_model=requested_model,
             user_message=user_message,
             summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
-            route_state=route_state,
+            signals=signals,
+            frame=frame,
+            force_rules_only=force_rules_only,
+        )
+        decision = classifier.postprocess_decision(
+            decision=decision,
             signals=signals,
         )
+
         policy_router = self._policy_router()
         fallback = policy_router.build_fallback_from_decision(
-            decision=intent_decision,
+            decision=decision,
             frame=frame,
             settings=settings,
             signals=signals,
         )
         route = policy_router.route_from_decision(
-            decision=intent_decision,
+            decision=decision,
             frame=frame,
             settings=settings,
             signals=signals,
             fallback=fallback,
-            source_override=str(intent_decision.source or ""),
+            source_override=str(decision.source or ""),
             force_disable_llm_router=True,
         )
         route, _ = self._route_verifier().verify(
-            decision=intent_decision,
+            decision=decision,
             route=route,
             signals=signals,
             frame=frame,
         )
-        route, raw = self._apply_route_runtime_overrides(
+        route, raw, override_notes, override_actions = self._apply_route_runtime_overrides(
             route=route,
             router_raw=raw,
             user_message=user_message,
@@ -7181,7 +6967,19 @@ class OfficeAgent:
             followup_attachment_requires_tools=followup_attachment_requires_tools,
             force_tool_followup=force_tool_followup,
         )
-        return route, raw
+        trace = build_route_trace(
+            request_id=request_id,
+            timestamp=timestamp,
+            user_message=user_message,
+            signals=signals,
+            frame=frame,
+            decision=decision,
+            route=route,
+            runtime_override_notes=override_notes,
+            runtime_override_actions=override_actions,
+        )
+        self._record_route_trace(trace)
+        return RoutePipelineResult(route=route, router_raw=raw, trace=trace)
 
     def _apply_route_runtime_overrides(
         self,
@@ -7195,11 +6993,40 @@ class OfficeAgent:
         followup_has_attachments: bool,
         followup_attachment_requires_tools: bool,
         force_tool_followup: bool,
-    ) -> tuple[dict[str, Any], str]:
+    ) -> tuple[dict[str, Any], str, list[str], list[str]]:
         updated_route = dict(route or {})
         updated_raw = str(router_raw or "")
+        notes: list[str] = []
+        actions: list[str] = []
         if not settings.enable_tools:
-            return updated_route, updated_raw
+            return updated_route, updated_raw, notes, actions
+
+        def apply_runtime_override(
+            update: dict[str, Any],
+            *,
+            action: str,
+            raw_reason: str,
+            note: str,
+        ) -> None:
+            nonlocal updated_route, updated_raw
+            updated_route = self._normalize_route_decision(
+                {
+                    **update,
+                    "source": "runtime_override",
+                },
+                fallback=updated_route,
+                settings=settings,
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "runtime_override",
+                    "reason": raw_reason,
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+            notes.append(note)
+            actions.append(action)
 
         attachment_context_incomplete = any(
             ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
@@ -7210,7 +7037,7 @@ class OfficeAgent:
             and not updated_route.get("use_worker_tools")
             and self._looks_like_understanding_request(user_message)
         ):
-            updated_route = self._normalize_route_decision(
+            apply_runtime_override(
                 {
                     "task_type": "attachment_tooling",
                     "complexity": "medium",
@@ -7223,24 +7050,16 @@ class OfficeAgent:
                     "use_conflict_detector": False,
                     "specialists": ["file_reader"],
                     "execution_policy": "attachment_tooling_generic",
-                    "reason": "backend_attachment_context_incomplete_requires_tooling",
+                    "reason": "runtime_attachment_context_incomplete_requires_tooling",
                     "summary": "检测到附件只有预览或解析失败，路由已直接切回读取工具链。",
-                    "source": "backend_override",
                 },
-                fallback=updated_route,
-                settings=settings,
-            )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "attachment_context_incomplete_requires_tooling",
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
+                action="attachment_context_requires_tooling",
+                raw_reason="attachment_context_incomplete_requires_tooling",
+                note="runtime-aware override: attachment context incomplete forced tooling path.",
             )
 
         if followup_has_attachments and not updated_route.get("use_worker_tools"):
-            updated_route = self._normalize_route_decision(
+            apply_runtime_override(
                 {
                     "task_type": "attachment_tooling",
                     "complexity": "medium",
@@ -7254,38 +7073,37 @@ class OfficeAgent:
                     "specialists": ["file_reader"],
                     "execution_policy": "attachment_tooling_generic",
                     "reason": (
-                        "backend_followup_attachment_requires_tooling"
+                        "runtime_followup_attachment_requires_tooling"
                         if followup_attachment_requires_tools
-                        else "backend_followup_attachment_prefers_worker_tooling"
+                        else "runtime_followup_attachment_prefers_worker_tooling"
                     ),
                     "summary": (
                         "跟进轮附件本轮只给了路径或需要全文读取，路由已直接切回 Worker 工具链。"
                         if followup_attachment_requires_tools
                         else "检测到跟进轮新增附件，路由已优先切回 Worker 工具链。"
                     ),
-                    "source": "backend_override",
                 },
-                fallback=updated_route,
-                settings=settings,
-            )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": (
-                        "followup_attachment_requires_tooling"
-                        if followup_attachment_requires_tools
-                        else "followup_attachment_prefers_worker_tooling"
-                    ),
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
+                action=(
+                    "followup_attachment_requires_tooling"
+                    if followup_attachment_requires_tools
+                    else "followup_attachment_prefers_worker_tooling"
+                ),
+                raw_reason=(
+                    "followup_attachment_requires_tooling"
+                    if followup_attachment_requires_tools
+                    else "followup_attachment_prefers_worker_tooling"
+                ),
+                note=(
+                    "runtime-aware override: follow-up attachment required full tooling."
+                    if followup_attachment_requires_tools
+                    else "runtime-aware override: follow-up attachment forced worker tooling."
+                ),
             )
 
         if force_tool_followup and not updated_route.get("use_worker_tools"):
-            local_code_lookup = self._looks_like_local_code_lookup_request(user_message, attachment_metas)
-            updated_route = self._normalize_route_decision(
+            apply_runtime_override(
                 {
-                    "task_type": "code_lookup" if local_code_lookup else updated_route.get("task_type"),
+                    "task_type": updated_route.get("task_type") or "standard",
                     "complexity": updated_route.get("complexity") or "medium",
                     "use_planner": True,
                     "use_worker_tools": True,
@@ -7294,32 +7112,24 @@ class OfficeAgent:
                     "use_structurer": False,
                     "use_web_prefetch": False,
                     "use_conflict_detector": False,
-                    "specialists": ["file_reader"] if (attachment_metas or local_code_lookup) else updated_route.get("specialists") or [],
+                    "specialists": updated_route.get("specialists") or (["file_reader"] if attachment_metas else []),
                     "execution_policy": "continue_tooling",
-                    "reason": "backend_followup_execution_ack_forces_tool_continuation",
+                    "reason": "runtime_followup_execution_ack_forces_tool_continuation",
                     "summary": "检测到用户明确要求继续执行，路由已直接延续 Worker 工具链。",
-                    "source": "backend_override",
                 },
-                fallback=updated_route,
-                settings=settings,
-            )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "followup_execution_ack_forces_tool_continuation",
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
+                action="followup_execution_ack_forces_tool_continuation",
+                raw_reason="followup_execution_ack_forces_tool_continuation",
+                note="runtime-aware override: explicit follow-up execution acknowledgement latched worker tooling.",
             )
 
         if (
             not updated_route.get("use_worker_tools")
+            and bool(updated_route.get("requires_local_lookup") or updated_route.get("default_root_search"))
             and self._should_force_initial_tool_execution(user_message, attachment_metas)
         ):
-            local_code_lookup = self._looks_like_local_code_lookup_request(user_message, attachment_metas)
-            updated_route = self._normalize_route_decision(
+            apply_runtime_override(
                 {
-                    "task_type": "code_lookup" if local_code_lookup else updated_route.get("task_type"),
+                    "task_type": updated_route.get("task_type") or "code_lookup",
                     "complexity": updated_route.get("complexity") or "medium",
                     "use_planner": True,
                     "use_worker_tools": True,
@@ -7328,25 +7138,35 @@ class OfficeAgent:
                     "use_structurer": False,
                     "use_web_prefetch": False,
                     "use_conflict_detector": False,
-                    "specialists": ["file_reader"] if local_code_lookup else updated_route.get("specialists") or [],
-                    "execution_policy": "code_lookup_with_tools" if local_code_lookup else updated_route.get("execution_policy") or "attachment_tooling_generic",
-                    "reason": "backend_force_initial_tool_execution",
-                    "summary": "后端判定本轮属于本地搜索或代码定位任务，直接升级为 Worker 工具链。",
-                    "source": "backend_override",
+                    "specialists": updated_route.get("specialists") or ["file_reader"],
+                    "execution_policy": "code_lookup_with_tools",
+                    "reason": "runtime_force_initial_tool_execution",
+                    "summary": "运行时判定本轮需要本地定位工具，已升级为 Worker 工具链。",
                 },
-                fallback=updated_route,
-                settings=settings,
+                action="force_initial_tool_execution",
+                raw_reason="force_initial_tool_execution",
+                note="runtime-aware override: local lookup route forced worker tooling.",
             )
-            updated_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "force_initial_tool_execution",
-                    "previous_source": route.get("source"),
-                    "task_type": updated_route.get("task_type"),
-                },
-                ensure_ascii=False,
+        return updated_route, updated_raw, notes, actions
+
+    def _route_trace_enabled(self) -> bool:
+        return str(os.environ.get(_ROUTE_TRACE_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _record_route_trace(self, trace: RouteTrace) -> None:
+        try:
+            detailed = self._route_trace_enabled()
+            payload = route_trace_payload(trace, detailed=detailed)
+            trace_dir = (self.config.workspace_root / "artifacts" / "router_traces").resolve()
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            timestamp_part = str(trace.timestamp or "").replace(":", "").replace("-", "")
+            filename = f"{timestamp_part}_{trace.request_id}.json"
+            (trace_dir / filename).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
             )
-        return updated_route, updated_raw
+            _route_trace_logger.info("route_trace %s", json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            return
 
     def _router_system_hint(self, route: dict[str, Any]) -> str:
         task_type = str(route.get("task_type") or "standard").strip()

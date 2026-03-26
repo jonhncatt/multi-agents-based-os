@@ -2,8 +2,66 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.intent_constants import INTENT_LOW_CONFIDENCE_THRESHOLD
+from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_schema import ConversationFrame, IntentClassification, IntentDecision, RequestSignals, RouteDecision
+from packages.office_modules.runtime_profiles import default_runtime_profile_for_route
+
+
+_TASK_TYPE_TO_PRIMARY_INTENT = {
+    "understanding": "understanding",
+    "simple_understanding": "understanding",
+    "inline_document_understanding": "understanding",
+    "attachment_tooling": "understanding",
+    "attachment_understanding": "understanding",
+    "mixed_attachment": "understanding",
+    "evidence_lookup": "evidence",
+    "web_news": "web",
+    "web_research": "web",
+    "code_lookup": "code_lookup",
+    "grounded_generation": "generation",
+    "grounded_code_generation": "generation",
+    "generation": "generation",
+    "code_generation": "generation",
+    "mixed_intent": "standard",
+    "followup_transform": "standard",
+    "meeting_minutes": "meeting_minutes",
+    "simple_qa": "qa",
+    "general_qa": "qa",
+}
+
+_TASK_TYPE_TO_EXECUTION_POLICY = {
+    "understanding": "understanding_direct",
+    "simple_understanding": "understanding_direct",
+    "inline_document_understanding": "inline_document_understanding_direct",
+    "attachment_tooling": "attachment_tooling_generic",
+    "attachment_understanding": "attachment_holistic_understanding_with_tools",
+    "mixed_attachment": "llm_router_attachment_ambiguity",
+    "evidence_lookup": "evidence_full_pipeline",
+    "web_news": "web_news_brief",
+    "web_research": "web_research_full_pipeline",
+    "code_lookup": "code_lookup_with_tools",
+    "grounded_generation": "grounded_generation_pipeline",
+    "grounded_code_generation": "grounded_generation_with_tools",
+    "generation": "direct_generation",
+    "code_generation": "generation_with_tools",
+    "mixed_intent": "mixed_intent_planner_pipeline",
+    "followup_transform": "followup_transform_pipeline",
+    "meeting_minutes": "meeting_minutes_output",
+    "simple_qa": "qa_direct",
+    "general_qa": "llm_router_general_ambiguity",
+    "standard": "standard_safe_pipeline",
+}
+
+_ALLOWED_PRIMARY_INTENTS = {
+    "understanding",
+    "evidence",
+    "web",
+    "code_lookup",
+    "generation",
+    "meeting_minutes",
+    "qa",
+    "standard",
+}
 
 
 class PolicyRouter:
@@ -114,14 +172,14 @@ class PolicyRouter:
     ) -> dict[str, Any]:
         base = self._base_route_payload(decision=decision, frame=frame, signals=signals, settings=settings)
 
-        if bool(decision.requires_clarifying_route) or float(decision.confidence) < INTENT_LOW_CONFIDENCE_THRESHOLD:
+        if bool(decision.requires_clarifying_route):
             routed = self._route_clarifying_safe(decision=decision, signals=signals, settings=settings)
         elif self._is_followup_transform(decision=decision, frame=frame, signals=signals):
             routed = self._route_followup_transform(decision=decision, frame=frame, signals=signals, settings=settings)
-        elif bool(decision.mixed_intent):
-            routed = self._route_mixed(decision=decision, frame=frame, signals=signals, settings=settings)
         elif self._prefers_grounded_generation(decision=decision):
             routed = self._route_generation(decision=decision, signals=signals, settings=settings)
+        elif bool(decision.mixed_intent):
+            routed = self._route_mixed(decision=decision, frame=frame, signals=signals, settings=settings)
         else:
             primary = str(decision.top_intent or "standard").strip().lower()
             if primary == "understanding":
@@ -207,6 +265,7 @@ class PolicyRouter:
             "frame_dominant_intent": str(frame.dominant_intent or ""),
             "route_verified": False,
             "verifier_notes": [],
+            "verifier_actions": [],
             "spec_lookup_request": bool(signals.spec_lookup_request),
             "evidence_required_mode": bool(signals.evidence_required),
             "default_root_search": bool(signals.default_root_search),
@@ -543,5 +602,125 @@ class PolicyRouter:
             decision.requires_grounding
             and "generation" in intents
             and "code_lookup" in intents
-            and float(decision.margin) <= 0.18
         )
+
+    def task_type_to_primary_intent(self, task_type: str) -> str:
+        normalized = str(task_type or "").strip().lower()
+        return str(_TASK_TYPE_TO_PRIMARY_INTENT.get(normalized, "standard"))
+
+    def task_type_to_execution_policy(self, task_type: str) -> str:
+        normalized = str(task_type or "").strip().lower()
+        return str(_TASK_TYPE_TO_EXECUTION_POLICY.get(normalized, "standard_safe_pipeline"))
+
+    def normalize_primary_intent(self, value: str, *, task_type: str = "") -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in _ALLOWED_PRIMARY_INTENTS:
+            return normalized
+        if task_type:
+            return self.task_type_to_primary_intent(task_type)
+        return "standard"
+
+    def normalize_route(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any],
+        settings: Any,
+    ) -> dict[str, Any]:
+        normalized = dict(fallback)
+        normalized.update(route or {})
+
+        normalized["task_type"] = str(normalized.get("task_type") or fallback.get("task_type") or "standard").strip()
+        complexity = str(normalized.get("complexity") or fallback.get("complexity") or "medium").strip().lower()
+        if complexity not in {"low", "medium", "high"}:
+            complexity = "medium"
+        normalized["complexity"] = complexity
+        normalized["specialists"] = self._agent._normalize_specialists(
+            normalized.get("specialists") or fallback.get("specialists") or []
+        )
+        normalized["primary_intent"] = self.normalize_primary_intent(
+            str(normalized.get("primary_intent") or fallback.get("primary_intent") or ""),
+            task_type=normalized["task_type"],
+        )
+        normalized["execution_policy"] = (
+            str(normalized.get("execution_policy") or fallback.get("execution_policy") or "").strip()
+            or self.task_type_to_execution_policy(normalized["task_type"])
+        )
+        normalized["runtime_profile"] = (
+            str(normalized.get("runtime_profile") or fallback.get("runtime_profile") or "").strip()
+            or default_runtime_profile_for_route(normalized)
+        )
+
+        for key in (
+            "use_planner",
+            "use_worker_tools",
+            "use_reviewer",
+            "use_revision",
+            "use_structurer",
+            "use_web_prefetch",
+            "use_conflict_detector",
+            "needs_llm_router",
+            "route_verified",
+        ):
+            normalized[key] = bool(normalized.get(key))
+        normalized["verifier_notes"] = self._agent._normalize_string_list(
+            normalized.get("verifier_notes") or [],
+            limit=12,
+            item_limit=220,
+        )
+        normalized["verifier_actions"] = self._agent._normalize_string_list(
+            normalized.get("verifier_actions") or [],
+            limit=12,
+            item_limit=120,
+        )
+
+        raw_spec_lookup_request = bool(normalized.get("spec_lookup_request"))
+        raw_evidence_required_mode = bool(normalized.get("evidence_required_mode"))
+        raw_default_root_search = bool(normalized.get("default_root_search"))
+
+        if not bool(getattr(settings, "enable_tools", False)):
+            normalized["use_worker_tools"] = False
+            normalized["use_web_prefetch"] = False
+
+        policy_spec = execution_policy_spec(normalized["execution_policy"])
+        normalized["use_planner"] = planner_enabled_for_policy(
+            normalized["execution_policy"],
+            use_worker_tools=bool(normalized["use_worker_tools"]),
+        )
+        normalized["use_reviewer"] = policy_spec.reviewer
+        normalized["use_revision"] = policy_spec.revision
+        normalized["use_structurer"] = policy_spec.structurer
+        normalized["use_conflict_detector"] = policy_spec.conflict_detector
+
+        if not normalized["use_worker_tools"]:
+            normalized["use_web_prefetch"] = False
+
+        route_task_type = str(normalized.get("task_type") or "").strip().lower()
+        normalized["spec_lookup_request"] = raw_spec_lookup_request and route_task_type == "evidence_lookup"
+        normalized["evidence_required_mode"] = (
+            raw_evidence_required_mode
+            and route_task_type == "evidence_lookup"
+            and bool(normalized["use_worker_tools"])
+        )
+        normalized["default_root_search"] = raw_default_root_search and bool(normalized["use_worker_tools"])
+        review_chain_required = bool(
+            normalized["spec_lookup_request"]
+            or normalized["evidence_required_mode"]
+            or route_task_type in {"evidence_lookup", "web_research", "grounded_generation", "mixed_intent"}
+            or str(normalized.get("execution_policy") or "").strip().lower()
+            in {"grounded_generation_pipeline", "mixed_intent_planner_pipeline"}
+        )
+        if not review_chain_required:
+            normalized["use_reviewer"] = False
+            normalized["use_revision"] = False
+            normalized["use_structurer"] = False
+            normalized["use_conflict_detector"] = False
+
+        normalized["reason"] = str(normalized.get("reason") or fallback.get("reason") or "").strip()
+        normalized["source"] = str(normalized.get("source") or fallback.get("source") or "rules").strip() or "rules"
+        normalized["summary"] = (
+            str(normalized.get("summary") or "").strip()
+            or f"task_type={normalized['task_type']}, complexity={normalized['complexity']}"
+        )
+        normalized["router_model"] = str(normalized.get("router_model") or "").strip()
+        return normalized
