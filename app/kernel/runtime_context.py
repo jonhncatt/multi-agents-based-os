@@ -17,6 +17,29 @@ class RuntimeContext:
     health_state: str = "ready"
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def add_trace_event(
+        self,
+        *,
+        stage: str,
+        detail: str,
+        status: str = "ok",
+        elapsed_ms: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        events = self.metadata.get("trace_events")
+        if not isinstance(events, list):
+            events = []
+            self.metadata["trace_events"] = events
+        events.append(
+            {
+                "stage": str(stage or "").strip() or "module_event",
+                "detail": str(detail or "").strip(),
+                "status": str(status or "").strip() or "ok",
+                "elapsed_ms": max(0, int(elapsed_ms)),
+                "payload": dict(payload or {}),
+            }
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,

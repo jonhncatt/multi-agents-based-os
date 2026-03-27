@@ -6,6 +6,15 @@ Execution order is fixed:
 
 `M1 -> M2 -> M3 -> M4 -> M5 -> M6`
 
+Current status:
+
+- `M1` complete
+- `M2` complete
+- `M3` complete
+- `M4` complete
+- `M5` complete
+- `M6` active
+
 ## M1 Platform Boundaries And Baseline Metrics
 
 ### Goal

@@ -13,6 +13,10 @@ INTEGRATION_TESTS_DIR = REPO_ROOT / "tests" / "integration"
 SWARM_ROADMAP = REPO_ROOT / "docs" / "swarm-roadmap.md"
 SWARM_CONTRACT = REPO_ROOT / "docs" / "architecture" / "swarm_contract.md"
 SWARM_CONTRACT_CODE = REPO_ROOT / "app" / "contracts" / "swarm.py"
+SWARM_DEMO_SCRIPT = REPO_ROOT / "scripts" / "demo_research_swarm.py"
+SWARM_DEMO_DOC = REPO_ROOT / "docs" / "demo" / "research_swarm_demo.md"
+SWARM_INTEGRATION_TEST = REPO_ROOT / "tests" / "integration" / "test_kernel_research_swarm_flow.py"
+SWARM_UNIT_TEST = REPO_ROOT / "tests" / "swarm" / "test_research_swarm_pipeline.py"
 STATIC_APP = REPO_ROOT / "app" / "static" / "app.js"
 LEGACY_AGENT = REPO_ROOT / "app" / "agent.py"
 SHIM_INVENTORY = REPO_ROOT / "docs" / "migration" / "compatibility_shim_inventory.md"
@@ -101,6 +105,8 @@ def _swarm_metrics() -> dict[str, object]:
         "aggregator_contract_defined": ("Aggregator Minimum Responsibilities" in contract_doc) or ("merge / deduplicate / mark conflicts" in roadmap),
         "degradation_strategy_defined": ("serial_replay" in contract_doc and "mark_only" in contract_doc),
         "contract_code_present": "class SwarmJoinSpec" in contract_code and "class SwarmBranchSpec" in contract_code,
+        "mvp_demo_present": SWARM_DEMO_SCRIPT.exists() and SWARM_DEMO_DOC.exists(),
+        "mvp_regression_present": SWARM_INTEGRATION_TEST.exists() and SWARM_UNIT_TEST.exists(),
     }
 
 

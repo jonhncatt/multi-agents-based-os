@@ -49,4 +49,5 @@ def test_research_module_manifest_and_metadata_are_formalized() -> None:
 
     assert RESEARCH_MODULE_MANIFEST.compatibility_level == "native"
     assert RESEARCH_MODULE_MANIFEST.owner == "research-agent-os"
+    assert "task.research.swarm" in RESEARCH_MODULE_MANIFEST.capabilities
     assert Path("app/business_modules/research_module/module.json").is_file()

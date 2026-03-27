@@ -17,7 +17,7 @@ Provide a clean research-oriented module that can:
 - [`app/business_modules/research_module/manifest.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/manifest.py)
 - [`app/business_modules/research_module/module.json`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.json)
 
-## Current Pipeline
+## Current Pipelines
 
 ```text
 KernelHost.dispatch(TaskRequest)
@@ -25,6 +25,15 @@ KernelHost.dispatch(TaskRequest)
   -> tool_runtime_module.execute(web.search)
   -> optional tool_runtime_module.execute(web.fetch)
   -> structured research summary
+```
+
+```text
+KernelHost.dispatch(TaskRequest)
+  -> research_module.handle(...)
+  -> parallel research branches
+  -> serial replay for failed branch
+  -> Aggregator (merge / deduplicate / mark conflicts)
+  -> Swarm research summary + trace
 ```
 
 ## Tool Contract Usage
@@ -52,3 +61,24 @@ python scripts/demo_research_module.py --check
 ```
 
 That demo runs `research_module` through `KernelHost` using a deterministic provider stub.
+
+## Swarm MVP Demo
+
+`M5` extends `research_module` with a bounded module-local Swarm mode.
+
+Use:
+
+```bash
+python scripts/demo_research_swarm.py --check
+```
+
+This demo proves:
+
+- multiple research inputs can be processed in parallel
+- branch failure degrades through `serial_replay`
+- the Aggregator only merges, deduplicates, and marks conflicts
+- trace output exposes `swarm_branch_plan`, `swarm_degradation`, and `swarm_join`
+
+Readable demo notes:
+
+- [docs/demo/research_swarm_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/research_swarm_demo.md)

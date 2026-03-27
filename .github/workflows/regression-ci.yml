@@ -62,6 +62,9 @@ jobs:
       - name: Run minimal Agent OS demo smoke
         run: python scripts/demo_minimal_agent_os.py --check
 
+      - name: Run research Swarm demo smoke
+        run: python scripts/demo_research_swarm.py --check
+
       - name: Run regression eval harness
         run: mkdir -p artifacts/evals && python scripts/run_evals.py --cases evals/gate_cases.json --output artifacts/evals/regression-summary.json
 

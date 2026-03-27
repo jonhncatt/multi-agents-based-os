@@ -240,6 +240,19 @@ class KernelHost:
         if runtime_context.runtime_profile:
             trace.runtime_profile = runtime_context.runtime_profile
         trace.health_state = runtime_context.health_state
+        for event in list(runtime_context.metadata.get("trace_events") or []):
+            if not isinstance(event, dict):
+                continue
+            trace.add_event(
+                TraceEvent(
+                    stage=str(event.get("stage") or "module_event"),
+                    detail=str(event.get("detail") or ""),
+                    status=str(event.get("status") or "ok"),
+                    elapsed_ms=max(0, int(event.get("elapsed_ms") or 0)),
+                    module_id=module.manifest.module_id,
+                    payload=dict(event.get("payload") or {}),
+                )
+            )
         trace.final_outcome = "ok" if response.ok else "failed"
         trace.error_summary = str(response.error or "")
         trace.elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))

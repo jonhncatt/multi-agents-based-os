@@ -58,8 +58,9 @@
 - 阶段 2：已完成
 - 阶段 3：MVP 已完成
 - 阶段 3.5：已完成
-- 阶段 4：试点进行中
-- 下一步重点：扩大多实例覆盖面，并为阶段 5/6 准备分支与聚合
+- 阶段 4：试点已完成
+- 阶段 5：第一个模块内 branch/join MVP 已完成
+- 下一步重点：把当前 Swarm MVP 接进正式门禁，并推进兼容层退场
 
 补充：当前仓库正在把多 role runtime 正式抽成 `agent-core`，并把 office 领域 roles / tools / prompts 收敛为 `capability modules`。这意味着后续 Stage 4/5 的并行与聚合，不再依赖单体 `app/agent.py` 的硬编码岗位定义。
 

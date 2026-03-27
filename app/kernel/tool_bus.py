@@ -25,7 +25,12 @@ class ToolBus:
 
         contract = self.registry.get_tool_contract(normalized_call.name)
         timeout = float(normalized_call.timeout_sec) if normalized_call.timeout_sec is not None else float(getattr(contract, "timeout", 0.0) or 0.0)
-        retries = max(0, int(normalized_call.retries) if normalized_call.retries else int((getattr(contract, "retry_policy", {}) or {}).get("max_retries", 0) or 0))
+        if int(normalized_call.retries) < 0:
+            retries = 0
+        elif normalized_call.retries:
+            retries = max(0, int(normalized_call.retries))
+        else:
+            retries = max(0, int((getattr(contract, "retry_policy", {}) or {}).get("max_retries", 0) or 0))
         prepared_call = replace(normalized_call, timeout_sec=timeout, retries=retries)
 
         providers = self.registry.providers_for_tool(prepared_call.name)

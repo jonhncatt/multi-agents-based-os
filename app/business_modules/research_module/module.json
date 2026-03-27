@@ -1,8 +1,8 @@
 {
   "module_id": "research_module",
   "display_name": "Research Module",
-  "version": "0.2.0",
-  "capabilities": ["task.research", "task.investigation"],
+  "version": "0.3.0",
+  "capabilities": ["task.research", "task.investigation", "task.research.swarm"],
   "required_tools": ["web.search", "web.fetch"],
   "optional_tools": ["file.read", "workspace.read"],
   "healthcheck": "health_check",

@@ -44,10 +44,13 @@ Purpose:
 - `swarm.aggregator_contract_defined`
 - `swarm.degradation_strategy_defined`
 - `swarm.contract_code_present`
+- `swarm.mvp_demo_present`
+- `swarm.mvp_regression_present`
 
 Purpose:
 
 - separate “runtime primitives already exist” from “Swarm MVP contract is actually defined”
+- show when the Swarm MVP stops being just architecture and becomes demoable + regression-protected
 
 ## Collection Policy
 

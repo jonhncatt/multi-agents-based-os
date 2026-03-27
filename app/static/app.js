@@ -164,15 +164,15 @@ const AGENT_OS_MILESTONES = [
   {
     id: "M5",
     title: "Swarm MVP",
-    status: "active",
-    summary: "范围只做多输入并行 + 最小聚合，并要求非开发者也能看懂。",
-    tags: ["parallel inputs", "minimal aggregation", "demo readability"],
+    status: "done",
+    summary: "research_module 已交付多输入并行 + 最小聚合的 Swarm MVP，并带串行补跑退化与可读 demo。",
+    tags: ["parallel inputs", "serial replay", "minimal aggregation", "demo readability"],
   },
   {
     id: "M6",
     title: "门禁与 shim 退场",
-    status: "queued",
-    summary: "把 module/swarm/shim 门禁接进 workflow，并正式退场至少 1 个 shim。",
+    status: "active",
+    summary: "下一步把 module/swarm/shim 门禁接进 workflow，并正式退场至少 1 个 shim。",
     tags: ["workflow gates", "shim retirement", "regression guard"],
   },
 ];

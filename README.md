@@ -161,6 +161,14 @@ KernelHost.dispatch
 python scripts/demo_research_module.py --check
 ```
 
+Swarm MVP demo：
+
+```bash
+python scripts/demo_research_swarm.py --check
+```
+
+说明见：[docs/demo/research_swarm_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/research_swarm_demo.md)
+
 ### 质量门禁
 
 开发依赖：
@@ -177,6 +185,7 @@ python scripts/collect_platform_metrics.py
 pytest -q tests
 python scripts/run_evals.py --cases evals/gate_cases.json --output artifacts/evals/regression-summary.json
 python scripts/demo_minimal_agent_os.py --check
+python scripts/demo_research_swarm.py --check
 ```
 
 CI 会在 push / pull request 上运行：
@@ -185,6 +194,7 @@ CI 会在 push / pull request 上运行：
 - `python scripts/collect_platform_metrics.py`
 - `pytest -q tests`
 - `python scripts/demo_minimal_agent_os.py --check`
+- `python scripts/demo_research_swarm.py --check`
 - `python scripts/run_evals.py --cases evals/gate_cases.json`
 
 说明：

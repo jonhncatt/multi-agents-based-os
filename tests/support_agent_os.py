@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 from app.contracts import HealthReport, ModuleManifest, TaskRequest, TaskResponse, ToolCall, ToolResult
@@ -83,9 +84,29 @@ class FakeResearchProvider:
     provider_id = "fake_research_provider"
     supported_tools = ["web.search", "web.fetch"]
 
+    def __init__(self, *, fail_once_queries: set[str] | None = None) -> None:
+        self._fail_once_queries = {str(item).strip() for item in (fail_once_queries or set()) if str(item).strip()}
+        self._failed_queries: set[str] = set()
+        self._lock = Lock()
+
     def execute(self, call: ToolCall) -> ToolResult:
         if call.name == "web.search":
             query = str(call.arguments.get("query") or "").strip()
+            with self._lock:
+                if query in self._fail_once_queries and query not in self._failed_queries:
+                    self._failed_queries.add(query)
+                    return ToolResult(
+                        ok=False,
+                        tool_name=call.name,
+                        provider_id=self.provider_id,
+                        error=f"simulated search failure for {query}",
+                    )
+            top_title = "Shared Research Conflict" if "conflict" in query.lower() else "Research Source One"
+            top_url = (
+                f"https://example.com/{query.lower().replace(' ', '-')}"
+                if "conflict" in query.lower()
+                else "https://example.com/source-one"
+            )
             return ToolResult(
                 ok=True,
                 tool_name=call.name,
@@ -95,8 +116,8 @@ class FakeResearchProvider:
                     "query": query,
                     "results": [
                         {
-                            "title": "Research Source One",
-                            "url": "https://example.com/source-one",
+                            "title": top_title,
+                            "url": top_url,
                             "snippet": f"Source preview for {query}.",
                             "domain": "example.com",
                             "score": 9.8,
@@ -130,8 +151,13 @@ class FakeResearchProvider:
         return HealthReport(component_id=self.provider_id, status="healthy", summary="ok")
 
 
-def bind_fake_research_provider(runtime: Any) -> None:
-    provider = FakeResearchProvider()
+def bind_fake_research_provider(
+    runtime: Any,
+    *,
+    fail_once_queries: set[str] | None = None,
+    fallback_providers: list[str] | None = None,
+) -> None:
+    provider = FakeResearchProvider(fail_once_queries=fail_once_queries)
     runtime.kernel.register_provider(provider)
     for tool_name in ("web.search", "web.fetch"):
         contract = runtime.kernel.registry.get_tool_contract(tool_name)
@@ -140,5 +166,5 @@ def bind_fake_research_provider(runtime: Any) -> None:
         runtime.kernel.registry.register_tool_contract(
             contract,
             primary_provider=provider.provider_id,
-            fallback_providers=["http_web_provider"],
+            fallback_providers=list(fallback_providers if fallback_providers is not None else ["http_web_provider"]),
         )
