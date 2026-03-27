@@ -38,17 +38,29 @@ def test_kernel_host_getattr_records_access_and_warns_once(tmp_path: Path, monke
     helper_surface = runtime.legacy_helper_surface()
 
     with caplog.at_level(logging.WARNING):
-        helper_surface._debug_kernel_module_snapshot()
-        helper_surface._debug_kernel_module_snapshot()
+        helper_surface._build_followup_topic_hint(
+            user_message="继续",
+            history_turns=[
+                {"role": "user", "text": "先在 repo 里找 validate_user 函数"},
+                {"role": "assistant", "text": "我会先查找相关实现。"},
+            ],
+        )
+        helper_surface._build_followup_topic_hint(
+            user_message="继续",
+            history_turns=[
+                {"role": "user", "text": "先在 repo 里找 validate_user 函数"},
+                {"role": "assistant", "text": "我会先查找相关实现。"},
+            ],
+        )
 
     metrics = read_kernel_host_getattr_metrics()
     snapshot = runtime.debug_kernel_host_snapshot()
     reset_kernel_host_getattr_metrics()
 
-    assert metrics["fallback_access_counts"]["_debug_kernel_module_snapshot"] == 2
-    assert snapshot["compatibility_getattr"]["fallback_access_counts"]["_debug_kernel_module_snapshot"] == 2
+    assert metrics["fallback_access_counts"]["_build_followup_topic_hint"] == 2
+    assert snapshot["compatibility_getattr"]["fallback_access_counts"]["_build_followup_topic_hint"] == 2
     warning_messages = [record.getMessage() for record in caplog.records]
-    assert len([item for item in warning_messages if "_debug_kernel_module_snapshot" in item]) == 1
+    assert len([item for item in warning_messages if "_build_followup_topic_hint" in item]) == 1
 
 
 def test_blackboard_orchestration_runs_through_helper_and_preserves_completion_shape() -> None:

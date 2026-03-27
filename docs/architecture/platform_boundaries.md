@@ -44,6 +44,13 @@ The current migration focus for `packages/runtime_core/kernel_host.py` is catego
   - `_route_request_by_rules`
   - `_build_session_route_state`
   - `_normalize_route_decision_impl`
+- debug/inspection dependencies should prefer explicit legacy inspection methods instead of `__getattr__`
+  - `_debug_kernel_module_snapshot`
+  - `_debug_tool_registry_snapshot`
+  - `_debug_role_contract_matrix`
+  - `_debug_capability_multi_module_snapshot`
+  - `_debug_route_runtime_override_attachment_context_requires_tooling`
+  - `_debug_route_runtime_override_force_tool_followup`
 
 ## Retired Compatibility Zones
 

@@ -150,6 +150,24 @@ class KernelHost:
     ) -> dict[str, Any]:
         return self.normalize_route_decision(route=route, fallback=fallback, settings=settings)
 
+    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_kernel_module_snapshot() or {})
+
+    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_tool_registry_snapshot() or {})
+
+    def _debug_role_contract_matrix(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_role_contract_matrix() or {})
+
+    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_capability_multi_module_snapshot() or {})
+
+    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_route_runtime_override_attachment_context_requires_tooling() or {})
+
+    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
+        return dict(self._primary_agent._debug_route_runtime_override_force_tool_followup() or {})
+
     def create_blackboard(
         self,
         *,

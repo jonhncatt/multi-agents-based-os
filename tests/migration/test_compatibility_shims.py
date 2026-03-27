@@ -47,6 +47,7 @@ def test_retired_execution_policy_shim_is_replaced_by_canonical_package() -> Non
 
 
 def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
+    reset_kernel_host_getattr_metrics()
     runtime = assemble_runtime(load_config())
     legacy = runtime.get_legacy_host()
     assert legacy is not None
@@ -82,6 +83,15 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
     assert "runtime_override_actions" in route_override_attachment
     assert route_override_followup["route"]["use_worker_tools"] is True
     assert "runtime_override_actions" in route_override_followup
+    metrics = read_kernel_host_getattr_metrics()
+    reset_kernel_host_getattr_metrics()
+
+    assert "_debug_kernel_module_snapshot" not in metrics["fallback_access_counts"]
+    assert "_debug_tool_registry_snapshot" not in metrics["fallback_access_counts"]
+    assert "_debug_role_contract_matrix" not in metrics["fallback_access_counts"]
+    assert "_debug_capability_multi_module_snapshot" not in metrics["fallback_access_counts"]
+    assert "_debug_route_runtime_override_attachment_context_requires_tooling" not in metrics["fallback_access_counts"]
+    assert "_debug_route_runtime_override_force_tool_followup" not in metrics["fallback_access_counts"]
 
 
 def test_legacy_host_route_helper_aliases_avoid_kernel_getattr_metrics() -> None:

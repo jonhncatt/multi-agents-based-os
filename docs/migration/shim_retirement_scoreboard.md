@@ -14,4 +14,4 @@
 | Shim | Current Role | Next Retirement Dependency |
 | --- | --- | --- |
 | `app/agent.py` | Legacy Office runtime shim | `office_module` must stop delegating to `OfficeAgent`; remaining work is the execution path itself, while compatibility-only auth/capability/kernel/evolution/role-lab/runtime-override helpers already live in `packages/office_modules/*` |
-| `packages/runtime_core/kernel_host.py` | Legacy capability host shell | Agent OS assembly must stop instantiating the compatibility host; blackboard orchestration has already moved out of the class; host-structure and route-helper fallback categories are drained, so the next blocker is the remaining low-frequency debug/helper fallback set before class-level retirement |
+| `packages/runtime_core/kernel_host.py` | Legacy capability host shell | Agent OS assembly must stop instantiating the compatibility host; blackboard orchestration has already moved out of the class; host-structure, route-helper, and debug/inspection fallback categories are drained, so the next blocker is only the remaining office helper tail before class-level retirement |

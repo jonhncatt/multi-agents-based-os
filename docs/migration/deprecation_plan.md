@@ -46,6 +46,13 @@ Before `packages/runtime_core/kernel_host.py` can enter class-level retirement w
   - `_route_request_by_rules`
   - `_build_session_route_state`
   - `_normalize_route_decision_impl`
+- debug/inspection fallback access is drained under the same verification pass:
+  - `_debug_kernel_module_snapshot`
+  - `_debug_tool_registry_snapshot`
+  - `_debug_role_contract_matrix`
+  - `_debug_capability_multi_module_snapshot`
+  - `_debug_route_runtime_override_attachment_context_requires_tooling`
+  - `_debug_route_runtime_override_force_tool_followup`
 - the verification pass includes:
   - full `pytest`
   - minimal smoke demo
@@ -65,5 +72,6 @@ Before `packages/runtime_core/kernel_host.py` can enter class-level retirement w
 2. sever `office_module -> OfficeAgent` delegation
 3. observe and shrink `KernelHost.__getattr__` fallback access
 4. move blackboard orchestration into `packages/runtime_core/legacy_host_support.py`
-5. drain host-structure and route-helper fallback categories
-6. retire legacy capability host coupling
+5. drain host-structure, route-helper, and debug/inspection fallback categories
+6. drain the remaining office helper tail off the mixed host object
+7. retire legacy capability host coupling

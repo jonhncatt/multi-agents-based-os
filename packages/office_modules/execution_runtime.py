@@ -162,6 +162,30 @@ class OfficeLegacyHelperSurface(ABC):
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    @abstractmethod
+    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _debug_role_contract_matrix(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
+        raise NotImplementedError
+
 
 def _default_legacy_helper_surface_metrics() -> dict[str, Any]:
     return {
@@ -328,6 +352,42 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             )
             or {}
         )
+
+    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_kernel_module_snapshot", None)
+        if callable(method):
+            return dict(method() or {})
+        raise AttributeError("_debug_kernel_module_snapshot")
+
+    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_tool_registry_snapshot", None)
+        if callable(method):
+            return dict(method() or {})
+        raise AttributeError("_debug_tool_registry_snapshot")
+
+    def _debug_role_contract_matrix(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_role_contract_matrix", None)
+        if callable(method):
+            return dict(method() or {})
+        raise AttributeError("_debug_role_contract_matrix")
+
+    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_capability_multi_module_snapshot", None)
+        if callable(method):
+            return dict(method() or {})
+        raise AttributeError("_debug_capability_multi_module_snapshot")
+
+    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_route_runtime_override_attachment_context_requires_tooling", None)
+        if callable(method):
+            return dict(method() or {})
+        raise AttributeError("_debug_route_runtime_override_attachment_context_requires_tooling")
+
+    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_route_runtime_override_force_tool_followup", None)
+        if callable(method):
+            return dict(method() or {})
+        raise AttributeError("_debug_route_runtime_override_force_tool_followup")
 
 
 class LegacyOfficeExecutionRuntimeAdapter(OfficeExecutionRuntime):
