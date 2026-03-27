@@ -7,13 +7,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.agent import ExecutionState
 from app.config import load_config
 from app.core.bootstrap import build_kernel_runtime
 from app.models import ChatSettings, ToolEvent
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import now_iso
+from packages.office_modules.execution_state import ExecutionState
 from packages.runtime_core.kernel_host import KernelHost
 
 ROOT = Path(__file__).resolve().parent.parent

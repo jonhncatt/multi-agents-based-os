@@ -25,7 +25,6 @@ ACTIVE_SHIM_IMPORT_ALLOWLIST = {
     "app.agent": {
         "app/business_modules/office_module/module.py",
         "app/core/bootstrap.py",
-        "app/evals.py",
         "packages/office_modules/agent_module.py",
     },
     "packages.runtime_core.kernel_host": {

@@ -15,5 +15,6 @@ def test_shim_metrics_include_active_dependency_counts() -> None:
 
     assert counts["app.agent"] >= 1
     assert counts["packages.runtime_core.kernel_host"] >= 1
+    assert "app/evals.py" not in dependents["app.agent"]
     assert "app/business_modules/office_module/module.py" in dependents["app.agent"]
     assert "app/main.py" in dependents["packages.runtime_core.kernel_host"]
