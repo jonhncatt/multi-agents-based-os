@@ -115,10 +115,13 @@ git pull
 - 正式装配入口：[`app/bootstrap/assemble.py`](/Users/dalizhou/Desktop/new_validation_agent/app/bootstrap/assemble.py)
 - 正式内核入口：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
 - 标准业务模块样板：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
+- 第二正式模块候选：[`app/business_modules/research_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/research_module/module.py)
+- `research_module` 说明：[docs/modules/research_module.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/research_module.md)
 - 模块接入指南：[docs/modules/module_integration_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/module_integration_guide.md)
 - 平台边界规则：[docs/architecture/platform_boundaries.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/platform_boundaries.md)
 - 兼容层台账：[docs/migration/compatibility_shim_inventory.md](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/compatibility_shim_inventory.md)
 - 里程碑路线图：[docs/roadmap/agent_os_milestones.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/agent_os_milestones.md)
+- 第二模块选择记录：[docs/roadmap/second_module_selection.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/second_module_selection.md)
 - 平台指标定义：[docs/operations/platform_metrics.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_metrics.md)
 - packages 边界说明：[packages/README.md](/Users/dalizhou/Desktop/new_validation_agent/packages/README.md)
 
@@ -150,6 +153,12 @@ KernelHost.dispatch
 ```
 
 完整说明见：[docs/demo/minimal_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/minimal_demo.md)
+
+第二模块独立 demo：
+
+```bash
+python scripts/demo_research_module.py --check
+```
 
 ### 质量门禁
 

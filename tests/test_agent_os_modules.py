@@ -5,6 +5,7 @@ from typing import Any
 from app.bootstrap import AgentOSAssembleConfig, assemble_runtime
 from app.config import load_config
 from app.contracts import TaskRequest
+from tests.support_agent_os import bind_fake_research_provider
 
 
 class DummyLegacyHost:
@@ -60,11 +61,23 @@ def test_modules_init_invoke_and_health() -> None:
     assert office_resp.ok is True
     assert office_resp.text == "dummy response"
 
-    for module_id in ("research_module", "coding_module", "adaptation_module"):
+    bind_fake_research_provider(runtime)
+    research_resp = runtime.kernel.invoke(
+        "research_module",
+        TaskRequest(
+            task_id="t-research_module",
+            task_type="task.research",
+            message="ping",
+        ),
+    )
+    assert research_resp.ok is True
+    assert research_resp.payload["module_id"] == "research_module"
+    assert research_resp.payload["research"]["source_count"] >= 1
+
+    for module_id in ("coding_module", "adaptation_module"):
         resp = runtime.kernel.invoke(
             module_id,
             TaskRequest(task_id=f"t-{module_id}", task_type="test", message="ping"),
         )
         assert resp.ok is False
         assert "not implemented yet" in resp.error
-

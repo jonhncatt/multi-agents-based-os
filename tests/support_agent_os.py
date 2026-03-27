@@ -77,3 +77,68 @@ class HealthyWorkspaceProvider:
 
     def health_check(self) -> HealthReport:
         return HealthReport(component_id=self.provider_id, status="healthy", summary="ok")
+
+
+class FakeResearchProvider:
+    provider_id = "fake_research_provider"
+    supported_tools = ["web.search", "web.fetch"]
+
+    def execute(self, call: ToolCall) -> ToolResult:
+        if call.name == "web.search":
+            query = str(call.arguments.get("query") or "").strip()
+            return ToolResult(
+                ok=True,
+                tool_name=call.name,
+                provider_id=self.provider_id,
+                data={
+                    "ok": True,
+                    "query": query,
+                    "results": [
+                        {
+                            "title": "Research Source One",
+                            "url": "https://example.com/source-one",
+                            "snippet": f"Source preview for {query}.",
+                            "domain": "example.com",
+                            "score": 9.8,
+                            "source": "fake_research",
+                        },
+                        {
+                            "title": "Research Source Two",
+                            "url": "https://example.com/source-two",
+                            "snippet": "Secondary source preview.",
+                            "domain": "example.com",
+                            "score": 8.7,
+                            "source": "fake_research",
+                        },
+                    ],
+                },
+            )
+        if call.name == "web.fetch":
+            return ToolResult(
+                ok=True,
+                tool_name=call.name,
+                provider_id=self.provider_id,
+                data={
+                    "ok": True,
+                    "url": str(call.arguments.get("url") or ""),
+                    "content": "Fetched evidence body for the top research source.",
+                },
+            )
+        return ToolResult(ok=False, tool_name=call.name, provider_id=self.provider_id, error=f"unsupported tool: {call.name}")
+
+    def health_check(self) -> HealthReport:
+        return HealthReport(component_id=self.provider_id, status="healthy", summary="ok")
+
+
+def bind_fake_research_provider(runtime: Any) -> None:
+    provider = FakeResearchProvider()
+    runtime.kernel.register_provider(provider)
+    for tool_name in ("web.search", "web.fetch"):
+        contract = runtime.kernel.registry.get_tool_contract(tool_name)
+        if contract is None:
+            continue
+        runtime.kernel.registry.register_tool_contract(
+            contract,
+            primary_provider=provider.provider_id,
+            fallback_providers=["http_web_provider"],
+        )
