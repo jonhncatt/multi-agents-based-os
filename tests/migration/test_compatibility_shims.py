@@ -39,3 +39,28 @@ def test_retired_execution_policy_shim_is_replaced_by_canonical_package() -> Non
     assert Path("app/execution_policy.py").exists() is False
     assert hasattr(execution_policy, "execution_policy_spec")
     assert hasattr(execution_policy, "planner_enabled_for_policy")
+
+
+def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
+    runtime = assemble_runtime(load_config())
+    legacy = runtime.get_legacy_host()
+    assert legacy is not None
+
+    auth_summary = legacy._debug_openai_auth_summary()
+    capability_snapshot = legacy._debug_capability_bundle_snapshot()
+    kernel_snapshot = legacy._debug_kernel_module_snapshot()
+    codex_payload = legacy._debug_codex_input_payload(
+        [
+            {"role": "system", "content": "You are a helper."},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    evolution_update = legacy._debug_evolution_turn_update()
+
+    assert "available" in auth_summary
+    assert "module_paths" in capability_snapshot
+    assert "selected_modules" in kernel_snapshot
+    assert "instructions" in codex_payload
+    assert "input" in codex_payload
+    assert "event" in evolution_update
+    assert "overlay_profile" in evolution_update

@@ -29,7 +29,7 @@ These files exist to preserve legacy behavior and migration continuity. They are
 
 The preferred pattern for these zones is to push reusable logic into adjacent canonical helpers, leaving the shim file as a thin shell.
 
-For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compaction, runtime debug views, and other compatibility-only support code.
+For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compaction, auth/capability/kernel/evolution debug snapshots, runtime debug views, and other compatibility-only support code.
 
 ## Retired Compatibility Zones
 

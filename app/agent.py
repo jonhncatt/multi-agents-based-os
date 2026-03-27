@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import threading
-import tempfile
 import time
 from uuid import uuid4
 from pathlib import Path
@@ -72,6 +71,14 @@ from packages.office_modules.runtime_profiles import (
     default_runtime_profile_for_route,
 )
 from packages.office_modules.legacy_runtime_support import (
+    legacy_capability_bundle_snapshot as legacy_capability_bundle_snapshot_helper,
+    legacy_capability_multi_module_snapshot as legacy_capability_multi_module_snapshot_helper,
+    legacy_codex_input_payload as legacy_codex_input_payload_helper,
+    legacy_evolution_overlay_snapshot as legacy_evolution_overlay_snapshot_helper,
+    legacy_evolution_turn_update as legacy_evolution_turn_update_helper,
+    legacy_kernel_module_snapshot as legacy_kernel_module_snapshot_helper,
+    legacy_normalize_model_for_auth as legacy_normalize_model_for_auth_helper,
+    legacy_openai_auth_summary as legacy_openai_auth_summary_helper,
     compact_legacy_session as compact_legacy_session_helper,
     legacy_role_lab_runtime_snapshot as legacy_role_lab_runtime_snapshot_helper,
     legacy_tool_registry_snapshot as legacy_tool_registry_snapshot_helper,
@@ -87,7 +94,7 @@ from packages.office_modules.specialist_role import (
 )
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig, get_access_roots
-from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
+from app.codex_runner import CodexResponsesRunner
 from app.core.bootstrap import KernelRuntime, build_kernel_runtime
 from app.core.kernel_debug_support import (
     debug_kernel_active_contracts as debug_kernel_active_contracts_helper,
@@ -114,7 +121,6 @@ from app.context_assembly import ContextAssembler, coerce_active_task
 from app.policy_router import PolicyRouter
 from app.route_trace import build_route_trace, route_trace_payload
 from app.route_verifier import RouteVerifier
-from app.evolution import EvolutionStore
 from app.models import AgentPanel, ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.pipeline_hooks import (
@@ -711,118 +717,31 @@ class OfficeAgent:
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
     def _debug_openai_auth_summary(self) -> dict[str, Any]:
-        return self._auth_manager.auth_summary()
+        return legacy_openai_auth_summary_helper(self)
 
     def _debug_capability_bundle_snapshot(self) -> dict[str, Any]:
-        return {
-            "module_paths": list(self._capability_runtime.module_paths),
-            "modules": list(self._capability_runtime.metadata.get("modules") or []),
-            "agent_modules": list(self._capability_runtime.metadata.get("agent_modules") or []),
-            "tool_modules": list(self._capability_runtime.metadata.get("tool_modules") or []),
-            "output_modules": list(self._capability_runtime.metadata.get("output_modules") or []),
-            "memory_modules": list(self._capability_runtime.metadata.get("memory_modules") or []),
-            "primary_agent_module": self._selected_agent_module_id,
-            "primary_tool_module": self._selected_tool_module_id or self._capability_runtime.metadata.get("primary_tool_module"),
-            "primary_output_module": self._capability_runtime.metadata.get("primary_output_module"),
-            "primary_memory_module": self._capability_runtime.metadata.get("primary_memory_module"),
-            "extra_tool_modules": list(self._capability_runtime.metadata.get("extra_tool_modules") or []),
-            "role_sources": dict(self._capability_runtime.metadata.get("role_sources") or {}),
-        }
+        return legacy_capability_bundle_snapshot_helper(self)
 
     def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
-        runtime = build_agent_capability_runtime(
-            self.config,
-            ["packages.office_modules", "packages.office_addons"],
-        )
-        return {
-            "module_paths": list(runtime.module_paths),
-            "module_count": len(runtime.bundles),
-            "primary_tool_module": runtime.metadata.get("primary_tool_module"),
-            "extra_tool_modules": list(runtime.metadata.get("extra_tool_modules") or []),
-            "module_ids": [item.get("module_id") for item in runtime.metadata.get("modules") or []],
-            "role_sources": dict(runtime.metadata.get("role_sources") or {}),
-        }
+        return legacy_capability_multi_module_snapshot_helper(self)
 
     def _debug_codex_input_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        built_messages: list[Any] = []
-        for item in messages:
-            role = str(item.get("role") or "").strip().lower()
-            content = item.get("content") or ""
-            if role == "system":
-                built_messages.append(self._SystemMessage(content=content))
-                continue
-            if role == "user":
-                built_messages.append(self._HumanMessage(content=content))
-                continue
-            if role == "assistant":
-                built_messages.append(
-                    self._AIMessage(
-                        content=content,
-                        tool_calls=item.get("tool_calls") or [],
-                    )
-                )
-                continue
-            if role == "tool":
-                built_messages.append(
-                    self._ToolMessage(
-                        content=content,
-                        tool_call_id=str(item.get("tool_call_id") or "call_missing"),
-                        name=str(item.get("name") or ""),
-                    )
-                )
-        instructions, input_items = build_codex_input_payload(built_messages)
-        return {"instructions": instructions, "input": input_items}
+        return legacy_codex_input_payload_helper(self, messages)
 
     def _debug_normalize_model_for_auth(self, model: str, auth_mode: str) -> dict[str, Any]:
-        return {"normalized_model": normalize_model_for_auth_mode(model, auth_mode)}
+        return legacy_normalize_model_for_auth_helper(model, auth_mode)
 
     def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
-        snapshot = self._kernel_runtime.health_snapshot()
-        return {
-            "active_manifest": dict(snapshot.active_manifest),
-            "selected_modules": dict(snapshot.selected_modules),
-            "module_health": dict(snapshot.module_health),
-            "runtime_files": dict(snapshot.runtime_files),
-        }
+        return legacy_kernel_module_snapshot_helper(self)
 
     def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
         return legacy_tool_registry_snapshot_helper(self)
 
     def _debug_evolution_overlay_snapshot(self) -> dict[str, Any]:
-        store = EvolutionStore(self.config.overlay_profile_path, self.config.evolution_logs_dir)
-        return store.runtime_payload(limit=6)
+        return legacy_evolution_overlay_snapshot_helper(self)
 
     def _debug_evolution_turn_update(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-evolution-") as tmp_dir:
-            base = Path(tmp_dir).resolve()
-            store = EvolutionStore(base / "overlay_profile.json", base / "logs")
-            event = store.record_turn(
-                session_id="session-evolution-demo",
-                user_message="请把这份 TCG 设计文档解释一下，并整理成表格后写成邮件。",
-                assistant_text="我先解释整体设计，再给你一张表格，最后整理成邮件。",
-                route_state={
-                    "primary_intent": "understanding",
-                    "task_type": "attachment_tooling",
-                    "execution_policy": "attachment_holistic_understanding_with_tools",
-                    "runtime_profile": "explainer",
-                },
-                answer_bundle={"summary": "TCG 设计文档整体思路与关键表格输出。", "citations": []},
-                attachment_context_mode="explicit",
-                attachment_count=1,
-                settings={"response_style": "normal"},
-                effective_model="gpt-5.1-chat",
-                turn_count=2,
-            )
-            snapshot = store.runtime_payload(limit=4)
-            overlay = dict(snapshot.get("overlay_profile") or {})
-            module_affinity = dict(overlay.get("module_affinity") or {})
-            return {
-                "event": event,
-                "overlay_profile": overlay,
-                "recent_events": list(snapshot.get("recent_events") or []),
-                "router_top_signal": str(((module_affinity.get("router") or [{}])[0] or {}).get("name") or ""),
-                "finalizer_top_signal": str(((module_affinity.get("finalizer") or [{}])[0] or {}).get("name") or ""),
-            }
+        return legacy_evolution_turn_update_helper()
 
     def _debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
         return legacy_role_lab_runtime_snapshot_helper(self)
