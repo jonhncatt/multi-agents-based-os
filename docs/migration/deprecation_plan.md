@@ -28,7 +28,7 @@
 
 - `office_module` no longer delegates to `OfficeAgent`
 - Agent OS assembly no longer needs capability-runtime host objects for health/debug
-- `packages/runtime_core/kernel_host.py` is no longer needed even as a thin shell over `packages/runtime_core/legacy_host_support.py`
+- `packages/runtime_core/kernel_host.py` is no longer needed even as a thin shell over `packages/runtime_core/legacy_host_support.py`; `__getattr__` fallback access has been observed and drained, and blackboard orchestration no longer belongs to the class
 - `app/agent.py` no longer needs to retain compatibility-only session/debug helpers because they live in module-scoped support packages, including auth/capability/kernel/evolution snapshots, role-lab debug demos, and runtime-override demos
 - office routing/policy helpers fully live behind module-scoped packages
 - integration tests pass without instantiating compatibility host objects
@@ -37,4 +37,6 @@
 
 1. migrate office runtime internals into `app/business_modules/office_module/*`
 2. sever `office_module -> OfficeAgent` delegation
-3. retire legacy capability host coupling
+3. observe and shrink `KernelHost.__getattr__` fallback access
+4. move blackboard orchestration into `packages/runtime_core/legacy_host_support.py`
+5. retire legacy capability host coupling

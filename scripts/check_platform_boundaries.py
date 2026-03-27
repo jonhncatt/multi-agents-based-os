@@ -32,6 +32,11 @@ ACTIVE_SHIM_IMPORT_ALLOWLIST = {
     },
 }
 
+LEGACY_HOST_OBJECT_ACCESS_ALLOWLIST = {
+    "app/bootstrap/assemble.py",
+    "tests/migration/test_compatibility_shims.py",
+}
+
 REQUIRED_DOC_UPDATES = {
     "docs/architecture/platform_boundaries.md",
     "docs/migration/compatibility_shim_inventory.md",
@@ -161,6 +166,23 @@ def _active_shim_import_violations() -> list[str]:
     return violations
 
 
+def _legacy_host_object_access_violations() -> list[str]:
+    violations: list[str] = []
+    for path in _python_sources():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if relative in LEGACY_HOST_OBJECT_ACCESS_ALLOWLIST:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if re.search(r"\.get_legacy_host\s*\(", text):
+            violations.append(
+                f"{relative} accesses get_legacy_host(); use explicit legacy facade/helper surface instead of the mixed host object"
+            )
+    return violations
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check platform boundary guardrails.")
     parser.add_argument("--base", default="", help="Git base ref/sha to diff against.")
@@ -213,6 +235,14 @@ def main() -> int:
         for item in active_violations:
             print(f"  - {item}")
         print("[platform-boundaries] failing because active shim dependents must shrink, not grow.")
+        return 1
+
+    legacy_host_violations = _legacy_host_object_access_violations()
+    if legacy_host_violations:
+        print("[platform-boundaries] whole legacy host access detected outside allowlist:")
+        for item in legacy_host_violations:
+            print(f"  - {item}")
+        print("[platform-boundaries] failing because new runtime code must use explicit legacy facades instead of get_legacy_host().")
         return 1
 
     print("[platform-boundaries] checks passed")

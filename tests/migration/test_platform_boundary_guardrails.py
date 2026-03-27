@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.check_platform_boundaries import _active_shim_import_violations
+from scripts.check_platform_boundaries import _active_shim_import_violations, _legacy_host_object_access_violations
 from scripts.collect_platform_metrics import _shim_metrics
 
 
@@ -22,3 +22,8 @@ def test_shim_metrics_include_active_dependency_counts() -> None:
     assert "app/main.py" not in dependents["packages.runtime_core.kernel_host"]
     assert "app/evals.py" not in dependents["packages.runtime_core.kernel_host"]
     assert "app/bootstrap/assemble.py" in dependents["packages.runtime_core.kernel_host"]
+    assert "kernel_host_getattr" in metrics
+
+
+def test_runtime_code_does_not_access_whole_legacy_host_outside_allowlist() -> None:
+    assert _legacy_host_object_access_violations() == []

@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from packages.office_modules.execution_runtime import read_legacy_helper_surface_metrics
+from packages.runtime_core.legacy_host_support import read_kernel_host_getattr_metrics
 
 BUSINESS_MODULES_DIR = REPO_ROOT / "app" / "business_modules"
 MODULE_DOCS_DIR = REPO_ROOT / "docs" / "modules"
@@ -133,6 +134,7 @@ def _shim_metrics() -> dict[str, object]:
     active_documented = _extract_section_table_paths(inventory_text, "Active Inventory")
     retired_documented = _extract_section_table_paths(inventory_text, "Retired Shims")
     office_legacy_helper_surface = read_legacy_helper_surface_metrics()
+    kernel_host_getattr = read_kernel_host_getattr_metrics()
     active_shim_dependents: dict[str, list[str]] = {}
     for module_path in ACTIVE_SHIM_IMPORT_TARGETS:
         importers: list[str] = []
@@ -151,6 +153,7 @@ def _shim_metrics() -> dict[str, object]:
         },
         "active_shim_dependents": active_shim_dependents,
         "office_legacy_helper_surface": office_legacy_helper_surface,
+        "kernel_host_getattr": kernel_host_getattr,
         "shim_inventory_documented_count": len(active_documented),
         "shim_inventory_paths": active_documented,
         "retired_inventory_documented_count": len(retired_documented),

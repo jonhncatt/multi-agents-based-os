@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from packages.runtime_core.blackboard import Blackboard
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+KERNEL_HOST_GETATTR_METRICS_PATH = REPO_ROOT / "artifacts" / "platform_metrics" / "kernel_host_getattr_accesses.json"
+_KERNEL_HOST_GETATTR_METRICS_LOCK = Lock()
+_KERNEL_HOST_GETATTR_METRICS_CACHE: dict[str, Any] | None = None
 
 
 def build_primary_agent(
@@ -55,15 +64,109 @@ def create_blackboard(
     )
 
 
+def _default_kernel_host_getattr_metrics() -> dict[str, Any]:
+    return {
+        "updated_at": "",
+        "fallback_access_counts": {},
+    }
+
+
+def _load_kernel_host_getattr_metrics() -> dict[str, Any]:
+    global _KERNEL_HOST_GETATTR_METRICS_CACHE
+    if _KERNEL_HOST_GETATTR_METRICS_CACHE is not None:
+        return _KERNEL_HOST_GETATTR_METRICS_CACHE
+    if KERNEL_HOST_GETATTR_METRICS_PATH.exists():
+        try:
+            loaded = json.loads(KERNEL_HOST_GETATTR_METRICS_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                metrics = _default_kernel_host_getattr_metrics()
+                metrics.update(loaded)
+                metrics["fallback_access_counts"] = dict(metrics.get("fallback_access_counts") or {})
+                _KERNEL_HOST_GETATTR_METRICS_CACHE = metrics
+                return metrics
+        except (OSError, ValueError, TypeError):
+            pass
+    _KERNEL_HOST_GETATTR_METRICS_CACHE = _default_kernel_host_getattr_metrics()
+    return _KERNEL_HOST_GETATTR_METRICS_CACHE
+
+
+def _persist_kernel_host_getattr_metrics(metrics: dict[str, Any]) -> None:
+    KERNEL_HOST_GETATTR_METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KERNEL_HOST_GETATTR_METRICS_PATH.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def record_kernel_host_getattr_access(name: str) -> bool:
+    with _KERNEL_HOST_GETATTR_METRICS_LOCK:
+        metrics = _load_kernel_host_getattr_metrics()
+        counts = metrics["fallback_access_counts"]
+        counts[name] = int(counts.get(name) or 0) + 1
+        metrics["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist_kernel_host_getattr_metrics(metrics)
+        return counts[name] == 1
+
+
+def read_kernel_host_getattr_metrics() -> dict[str, Any]:
+    with _KERNEL_HOST_GETATTR_METRICS_LOCK:
+        metrics = _load_kernel_host_getattr_metrics()
+        return {
+            "updated_at": str(metrics.get("updated_at") or ""),
+            "fallback_access_counts": dict(metrics.get("fallback_access_counts") or {}),
+        }
+
+
+def reset_kernel_host_getattr_metrics() -> None:
+    global _KERNEL_HOST_GETATTR_METRICS_CACHE
+    with _KERNEL_HOST_GETATTR_METRICS_LOCK:
+        _KERNEL_HOST_GETATTR_METRICS_CACHE = _default_kernel_host_getattr_metrics()
+        if KERNEL_HOST_GETATTR_METRICS_PATH.exists():
+            KERNEL_HOST_GETATTR_METRICS_PATH.unlink()
+
+
 def complete_blackboard(blackboard: Blackboard, result: Any) -> None:
+    from packages.office_modules.execution_runtime import normalize_legacy_run_chat_result
+
+    normalized = normalize_legacy_run_chat_result(result)
     blackboard.complete(
-        effective_model=str(result[13] if len(result) > 13 else ""),
-        route_state=result[14] if len(result) > 14 and isinstance(result[14], dict) else {},
-        execution_plan=result[3] if len(result) > 3 and isinstance(result[3], list) else [],
-        execution_trace=result[4] if len(result) > 4 and isinstance(result[4], list) else [],
-        tool_events=result[1] if len(result) > 1 and isinstance(result[1], list) else [],
-        answer_bundle=result[11] if len(result) > 11 and isinstance(result[11], dict) else {},
+        effective_model=normalized.effective_model,
+        route_state=normalized.route_state,
+        execution_plan=normalized.execution_plan,
+        execution_trace=normalized.execution_trace,
+        tool_events=normalized.tool_events,
+        answer_bundle=normalized.answer_bundle,
     )
+
+
+def run_primary_agent_chat_with_blackboard(
+    *,
+    primary_agent: Any,
+    blackboard: Blackboard,
+    history_turns: list[dict[str, Any]],
+    summary: str,
+    user_message: str,
+    attachment_metas: list[dict[str, Any]],
+    settings: Any,
+    session_id: str | None = None,
+    route_state: dict[str, Any] | None = None,
+    progress_cb: Any | None = None,
+) -> Any:
+    blackboard.start()
+    try:
+        result = primary_agent.run_chat(
+            history_turns,
+            summary,
+            user_message,
+            attachment_metas,
+            settings,
+            session_id=session_id,
+            route_state=route_state,
+            progress_cb=progress_cb,
+            blackboard=blackboard,
+        )
+        complete_blackboard(blackboard, result)
+        return result
+    except Exception as exc:
+        blackboard.fail(str(exc))
+        raise
 
 
 def kernel_host_snapshot(
@@ -78,6 +181,7 @@ def kernel_host_snapshot(
     primary_memory_module: Any,
     capability_runtime: Any,
     blackboard: Blackboard | None,
+    getattr_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "agent_modules": [
@@ -156,6 +260,7 @@ def kernel_host_snapshot(
         "tool_dispatch_modules": list(capability_runtime.metadata.get("tool_dispatch_modules") or []),
         "role_sources": dict(capability_runtime.metadata.get("role_sources") or {}),
         "blackboard": blackboard.snapshot() if blackboard else {},
+        "compatibility_getattr": dict(getattr_metrics or {}),
     }
 
 
@@ -164,4 +269,8 @@ __all__ = [
     "complete_blackboard",
     "create_blackboard",
     "kernel_host_snapshot",
+    "read_kernel_host_getattr_metrics",
+    "record_kernel_host_getattr_access",
+    "reset_kernel_host_getattr_metrics",
+    "run_primary_agent_chat_with_blackboard",
 ]

@@ -10,6 +10,7 @@ from app.contracts import TaskRequest, TaskResponse, ToolContract
 from app.kernel import KernelHost
 from app.local_tools import LocalToolExecutor
 from app.system_modules import MemoryModule, OutputModule, PolicyModule, ToolRuntimeModule
+from packages.office_modules.execution_runtime import OfficeLegacyHelperSurface, adapt_office_legacy_helper_surface
 from packages.office_modules.legacy_runtime_support import (
     compact_legacy_session,
     legacy_role_lab_runtime_snapshot,
@@ -101,6 +102,32 @@ _DEFAULT_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
 
 
 @dataclass(slots=True)
+class LegacyHostFacade:
+    host: Any
+
+    def tools(self) -> Any:
+        return self.host.tools
+
+    def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
+        if hasattr(self.host, "_summarize_turns") and hasattr(self.host, "config"):
+            return bool(compact_legacy_session(self.host, session, keep_last_turns))
+        return bool(self.host.maybe_compact_session(session, keep_last_turns))
+
+    def debug_kernel_host_snapshot(self) -> dict[str, Any]:
+        return dict(self.host._debug_kernel_host_snapshot() or {})
+
+    def debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
+        if hasattr(self.host, "_role_runtime_controller"):
+            return dict(legacy_role_lab_runtime_snapshot(self.host) or {})
+        return dict(self.host._debug_role_lab_runtime_snapshot() or {})
+
+    def debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        if hasattr(self.host, "_module_registry") and hasattr(self.host, "_lc_tools"):
+            return dict(legacy_tool_registry_snapshot(self.host) or {})
+        return dict(self.host._debug_tool_registry_snapshot() or {})
+
+
+@dataclass(slots=True)
 class AgentOSRuntime:
     kernel: KernelHost
     office_module: OfficeModule
@@ -109,10 +136,14 @@ class AgentOSRuntime:
     providers: dict[str, object]
     _legacy_host: Any | None = None
     _legacy_host_factory: Callable[[], Any] | None = None
+    _legacy_host_facade: LegacyHostFacade | None = None
+    _legacy_helper_surface: OfficeLegacyHelperSurface | None = None
 
     def bind_legacy_host(self, host: Any) -> None:
         self._legacy_host = host
-        self.office_module.bind_legacy_host(host)
+        self._legacy_host_facade = LegacyHostFacade(host)
+        self._legacy_helper_surface = adapt_office_legacy_helper_surface(host)
+        self.office_module.bind_legacy_host(self._legacy_helper_surface)
 
     def get_legacy_host(self) -> Any | None:
         if self._legacy_host is not None:
@@ -122,35 +153,36 @@ class AgentOSRuntime:
         self.bind_legacy_host(self._legacy_host_factory())
         return self._legacy_host
 
-    def _require_legacy_host(self) -> Any:
+    def _require_legacy_facade(self) -> LegacyHostFacade:
+        if self._legacy_host_facade is not None:
+            return self._legacy_host_facade
         host = self.get_legacy_host()
-        if host is None:
-            raise RuntimeError("Legacy host is unavailable from AgentOSRuntime")
-        return host
+        if host is None or self._legacy_host_facade is None:
+            raise RuntimeError("Legacy host facade is unavailable from AgentOSRuntime")
+        return self._legacy_host_facade
+
+    def legacy_helper_surface(self) -> OfficeLegacyHelperSurface:
+        if self._legacy_helper_surface is not None:
+            return self._legacy_helper_surface
+        host = self.get_legacy_host()
+        if host is None or self._legacy_helper_surface is None:
+            raise RuntimeError("Office legacy helper surface is unavailable from AgentOSRuntime")
+        return self._legacy_helper_surface
 
     def legacy_tools(self) -> Any:
-        return self._require_legacy_host().tools
+        return self._require_legacy_facade().tools()
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
-        host = self._require_legacy_host()
-        if hasattr(host, "_summarize_turns") and hasattr(host, "config"):
-            return bool(compact_legacy_session(host, session, keep_last_turns))
-        return bool(host.maybe_compact_session(session, keep_last_turns))
+        return self._require_legacy_facade().maybe_compact_session(session, keep_last_turns)
 
     def debug_kernel_host_snapshot(self) -> dict[str, Any]:
-        return dict(self._require_legacy_host()._debug_kernel_host_snapshot() or {})
+        return self._require_legacy_facade().debug_kernel_host_snapshot()
 
     def debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
-        host = self._require_legacy_host()
-        if hasattr(host, "_role_runtime_controller"):
-            return dict(legacy_role_lab_runtime_snapshot(host) or {})
-        return dict(host._debug_role_lab_runtime_snapshot() or {})
+        return self._require_legacy_facade().debug_role_lab_runtime_snapshot()
 
     def debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        host = self._require_legacy_host()
-        if hasattr(host, "_module_registry") and hasattr(host, "_lc_tools"):
-            return dict(legacy_tool_registry_snapshot(host) or {})
-        return dict(host._debug_tool_registry_snapshot() or {})
+        return self._require_legacy_facade().debug_tool_registry_snapshot()
 
     def dispatch(self, request: TaskRequest, *, module_id: str | None = None) -> TaskResponse:
         return self.kernel.dispatch(request, module_id=module_id)

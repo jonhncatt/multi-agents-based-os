@@ -15,7 +15,7 @@ from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import now_iso
 from packages.office_modules.execution_state import ExecutionState
-from packages.office_modules.execution_runtime import adapt_office_execution_runtime, adapt_office_legacy_helper_surface
+from packages.office_modules.execution_runtime import adapt_office_execution_runtime
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES_PATH = ROOT / "evals" / "cases.json"
 
@@ -517,10 +517,7 @@ def run_regression_evals(
     cfg = load_config()
     kernel_runtime = build_kernel_runtime(cfg)
     agent_os_runtime = assemble_runtime(cfg, kernel_runtime=kernel_runtime)
-    legacy_host = agent_os_runtime.get_legacy_host()
-    if legacy_host is None:
-        raise RuntimeError("Agent OS runtime could not provide legacy host for eval harness")
-    helper_surface = adapt_office_legacy_helper_surface(legacy_host)
+    helper_surface = agent_os_runtime.legacy_helper_surface()
     execution_runtime = adapt_office_execution_runtime(helper_surface)
     tools = helper_surface.tools
     attachment_module = kernel_runtime.registry.attachment_context

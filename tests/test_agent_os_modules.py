@@ -116,3 +116,12 @@ def test_agent_os_runtime_exposes_legacy_facade_methods() -> None:
     assert runtime.debug_role_lab_runtime_snapshot() == {"role_lab": "ok"}
     assert runtime.debug_tool_registry_snapshot() == {"tool_registry": "ok"}
     assert runtime.legacy_tools().docker_status() == (True, "ok")
+
+
+def test_agent_os_runtime_exposes_legacy_helper_surface() -> None:
+    runtime = assemble_runtime(load_config(), legacy_host=DummyLegacyHost())
+
+    helper = runtime.legacy_helper_surface()
+    result = helper.run_chat([], "", "hello", [], {})
+
+    assert result[0] == "dummy response"

@@ -31,6 +31,8 @@ The preferred pattern for these zones is to push reusable logic into adjacent ca
 
 For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compaction, auth/capability/kernel/evolution snapshots, role-lab debug demos, runtime-override demos, runtime debug views, and other compatibility-only support code.
 
+For `packages/runtime_core/kernel_host.py`, prefer `packages/runtime_core/legacy_host_support.py` for blackboard orchestration, `__getattr__` fallback observability, and other compatibility-only lifecycle glue. `AgentOSRuntime` should consume explicit legacy facades instead of spreading whole mixed host object access.
+
 ## Retired Compatibility Zones
 
 - `app/router_rules.py`
@@ -71,6 +73,7 @@ The update must state:
 
 - Existing active shim dependents are explicitly allowlisted in the boundary gate.
 - New files must not start importing `app.agent` or `packages.runtime_core.kernel_host`.
+- New runtime code must not start calling `get_legacy_host()` outside the explicit compatibility allowlist.
 - If a dependency truly must exist, update the allowlist and the shim inventory in the same change, with a retirement reason.
 
 ## Review Questions

@@ -23,6 +23,7 @@ CI also uploads the metrics artifact.
 - `office_legacy_helper_surface.run_chat_calls`
 - `office_legacy_helper_surface.method_calls`
 - `office_legacy_helper_surface.attribute_accesses`
+- `kernel_host_getattr.fallback_access_counts`
 - `shim_inventory_documented_count`
 - `retired_inventory_documented_count`
 
@@ -32,6 +33,7 @@ Purpose:
 - prove at least one shim has actually retired
 - track whether the remaining active shims are spreading to new runtime dependents
 - track which `OfficeLegacyHelperSurface` compatibility entrypoints are still being exercised
+- track which `KernelHost.__getattr__` compatibility fallbacks are still being exercised before retirement
 - track whether active and retired shim inventories stay aligned with docs
 - verify the shim inventory stays aligned with the protected list
 

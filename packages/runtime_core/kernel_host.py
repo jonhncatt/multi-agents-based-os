@@ -8,16 +8,21 @@ compatibility runtime still depend on capability-runtime surfaces during
 migration.
 """
 
+import logging
 from typing import Any
 
 from packages.agent_core import AgentCapabilityRuntime, build_agent_capability_runtime
 from packages.runtime_core.blackboard import Blackboard
 from packages.runtime_core.legacy_host_support import (
     build_primary_agent,
-    complete_blackboard,
     create_blackboard,
     kernel_host_snapshot,
+    read_kernel_host_getattr_metrics,
+    record_kernel_host_getattr_access,
+    run_primary_agent_chat_with_blackboard,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KernelHost:
@@ -58,7 +63,10 @@ class KernelHost:
         )
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._primary_agent, name)
+        value = getattr(self._primary_agent, name)
+        if record_kernel_host_getattr_access(name):
+            logger.warning("KernelHost __getattr__ fallback accessed compatibility attribute: %s", name)
+        return value
 
     @property
     def primary_agent(self) -> Any:
@@ -99,24 +107,18 @@ class KernelHost:
             attachment_metas=attachment_metas,
         )
         self._last_blackboard = blackboard
-        blackboard.start()
-        try:
-            result = self._primary_agent.run_chat(
-                history_turns,
-                summary,
-                user_message,
-                attachment_metas,
-                settings,
-                session_id=session_id,
-                route_state=route_state,
-                progress_cb=progress_cb,
-                blackboard=blackboard,
-            )
-            complete_blackboard(blackboard, result)
-            return result
-        except Exception as exc:
-            blackboard.fail(str(exc))
-            raise
+        return run_primary_agent_chat_with_blackboard(
+            primary_agent=self._primary_agent,
+            blackboard=blackboard,
+            history_turns=history_turns,
+            summary=summary,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            session_id=session_id,
+            route_state=route_state,
+            progress_cb=progress_cb,
+        )
 
     def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
         return kernel_host_snapshot(
@@ -130,4 +132,5 @@ class KernelHost:
             primary_memory_module=self.primary_memory_module,
             capability_runtime=self.capability_runtime,
             blackboard=self._last_blackboard,
+            getattr_metrics=read_kernel_host_getattr_metrics(),
         )
