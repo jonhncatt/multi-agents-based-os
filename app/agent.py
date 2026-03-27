@@ -82,6 +82,8 @@ from packages.office_modules.legacy_runtime_support import (
     legacy_role_lab_multi_instance_batch as legacy_role_lab_multi_instance_batch_helper,
     compact_legacy_session as compact_legacy_session_helper,
     legacy_role_lab_worker_branch_graph as legacy_role_lab_worker_branch_graph_helper,
+    legacy_route_runtime_override_attachment_context_requires_tooling as legacy_route_runtime_override_attachment_context_requires_tooling_helper,
+    legacy_route_runtime_override_force_tool_followup as legacy_route_runtime_override_force_tool_followup_helper,
     legacy_role_lab_runtime_snapshot as legacy_role_lab_runtime_snapshot_helper,
     legacy_tool_registry_snapshot as legacy_tool_registry_snapshot_helper,
 )
@@ -941,77 +943,10 @@ class OfficeAgent:
         return debug_role_execution_smoke_matrix_helper(self)
 
     def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
-        base_route = self._normalize_route_decision(
-            {
-                "task_type": "simple_understanding",
-                "complexity": "low",
-                "use_planner": False,
-                "use_worker_tools": False,
-                "use_reviewer": False,
-                "use_revision": False,
-                "use_structurer": False,
-                "use_web_prefetch": False,
-                "use_conflict_detector": False,
-                "execution_policy": "attachment_understanding_direct",
-                "primary_intent": "understanding",
-                "reason": "debug_base_route",
-                "summary": "debug base route",
-            },
-            fallback={"task_type": "simple_understanding"},
-            settings=ChatSettings(enable_tools=True, response_style="short"),
-        )
-        route, raw, notes, actions = self._apply_route_runtime_overrides(
-            route=base_route,
-            router_raw='{"source":"rules"}',
-            user_message="请解释这个设计文档的整体思路",
-            attachment_metas=[
-                {
-                    "original_name": "spec.pdf",
-                    "suffix": ".pdf",
-                    "kind": "document",
-                    "size": 7340032,
-                }
-            ],
-            settings=ChatSettings(enable_tools=True, response_style="short"),
-            attachment_issues=["文档解析失败"],
-            followup_has_attachments=False,
-            followup_attachment_requires_tools=False,
-            force_tool_followup=False,
-        )
-        return {"route": route, "router_raw": raw, "runtime_override_notes": notes, "runtime_override_actions": actions}
+        return legacy_route_runtime_override_attachment_context_requires_tooling_helper(self)
 
     def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
-        base_route = self._normalize_route_decision(
-            {
-                "task_type": "simple_qa",
-                "complexity": "low",
-                "use_planner": False,
-                "use_worker_tools": False,
-                "use_reviewer": False,
-                "use_revision": False,
-                "use_structurer": False,
-                "use_web_prefetch": False,
-                "use_conflict_detector": False,
-                "execution_policy": "qa_direct",
-                "primary_intent": "qa",
-                "reason": "debug_base_route",
-                "summary": "debug base route",
-            },
-            fallback={"task_type": "simple_qa"},
-            settings=ChatSettings(enable_tools=True, response_style="short"),
-        )
-        route, raw, notes, actions = self._apply_route_runtime_overrides(
-            route=base_route,
-            router_raw='{"source":"rules"}',
-            user_message="继续，直接去搜代码并执行",
-            attachment_metas=[],
-            settings=ChatSettings(enable_tools=True, response_style="short"),
-            attachment_issues=[],
-            followup_has_attachments=False,
-            followup_attachment_requires_tools=False,
-            force_tool_followup=True,
-        )
-        return {"route": route, "router_raw": raw, "runtime_override_notes": notes, "runtime_override_actions": actions}
+        return legacy_route_runtime_override_force_tool_followup_helper(self)
 
     def _debug_kernel_shadow_package_syncs_module_version(self) -> dict[str, Any]:
         return debug_kernel_shadow_package_syncs_module_version_helper(self)

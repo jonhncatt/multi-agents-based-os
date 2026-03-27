@@ -29,7 +29,7 @@
 - `office_module` no longer delegates to `OfficeAgent`
 - Agent OS assembly no longer needs capability-runtime host objects for health/debug
 - `packages/runtime_core/kernel_host.py` is no longer needed even as a thin shell over `packages/runtime_core/legacy_host_support.py`
-- `app/agent.py` no longer needs to retain compatibility-only session/debug helpers because they live in module-scoped support packages, including auth/capability/kernel/evolution snapshots and role-lab debug demos
+- `app/agent.py` no longer needs to retain compatibility-only session/debug helpers because they live in module-scoped support packages, including auth/capability/kernel/evolution snapshots, role-lab debug demos, and runtime-override demos
 - office routing/policy helpers fully live behind module-scoped packages
 - integration tests pass without instantiating compatibility host objects
 

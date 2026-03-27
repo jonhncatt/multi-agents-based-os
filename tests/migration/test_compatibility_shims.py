@@ -58,6 +58,8 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
     evolution_update = legacy._debug_evolution_turn_update()
     role_lab_batch = legacy._debug_role_lab_multi_instance_batch()
     role_lab_graph = legacy._debug_role_lab_worker_branch_graph()
+    route_override_attachment = legacy._debug_route_runtime_override_attachment_context_requires_tooling()
+    route_override_followup = legacy._debug_route_runtime_override_force_tool_followup()
 
     assert "available" in auth_summary
     assert "module_paths" in capability_snapshot
@@ -70,3 +72,8 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
     assert role_lab_batch["instance_count"] >= 1
     assert role_lab_graph["ok"] is True
     assert role_lab_graph["branch_node_count"] >= 1
+    assert route_override_attachment["route"]["task_type"] == "attachment_tooling"
+    assert route_override_attachment["route"]["use_worker_tools"] is True
+    assert "runtime_override_actions" in route_override_attachment
+    assert route_override_followup["route"]["use_worker_tools"] is True
+    assert "runtime_override_actions" in route_override_followup

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.codex_runner import build_codex_input_payload
 from app.evolution import EvolutionStore
+from app.models import ChatSettings
 from app.openai_auth import normalize_model_for_auth_mode
 from packages.agent_core import RoleContext, RoleResult, RunState, build_agent_capability_runtime
 
@@ -348,6 +349,81 @@ def legacy_role_lab_worker_branch_graph(agent: Any) -> dict[str, Any]:
     }
 
 
+def legacy_route_runtime_override_attachment_context_requires_tooling(agent: Any) -> dict[str, Any]:
+    base_route = agent._normalize_route_decision(
+        {
+            "task_type": "simple_understanding",
+            "complexity": "low",
+            "use_planner": False,
+            "use_worker_tools": False,
+            "use_reviewer": False,
+            "use_revision": False,
+            "use_structurer": False,
+            "use_web_prefetch": False,
+            "use_conflict_detector": False,
+            "execution_policy": "attachment_understanding_direct",
+            "primary_intent": "understanding",
+            "reason": "debug_base_route",
+            "summary": "debug base route",
+        },
+        fallback={"task_type": "simple_understanding"},
+        settings=ChatSettings(enable_tools=True, response_style="short"),
+    )
+    route, raw, notes, actions = agent._apply_route_runtime_overrides(
+        route=base_route,
+        router_raw='{"source":"rules"}',
+        user_message="请解释这个设计文档的整体思路",
+        attachment_metas=[
+            {
+                "original_name": "spec.pdf",
+                "suffix": ".pdf",
+                "kind": "document",
+                "size": 7340032,
+            }
+        ],
+        settings=ChatSettings(enable_tools=True, response_style="short"),
+        attachment_issues=["文档解析失败"],
+        followup_has_attachments=False,
+        followup_attachment_requires_tools=False,
+        force_tool_followup=False,
+    )
+    return {"route": route, "router_raw": raw, "runtime_override_notes": notes, "runtime_override_actions": actions}
+
+
+def legacy_route_runtime_override_force_tool_followup(agent: Any) -> dict[str, Any]:
+    base_route = agent._normalize_route_decision(
+        {
+            "task_type": "simple_qa",
+            "complexity": "low",
+            "use_planner": False,
+            "use_worker_tools": False,
+            "use_reviewer": False,
+            "use_revision": False,
+            "use_structurer": False,
+            "use_web_prefetch": False,
+            "use_conflict_detector": False,
+            "execution_policy": "qa_direct",
+            "primary_intent": "qa",
+            "reason": "debug_base_route",
+            "summary": "debug base route",
+        },
+        fallback={"task_type": "simple_qa"},
+        settings=ChatSettings(enable_tools=True, response_style="short"),
+    )
+    route, raw, notes, actions = agent._apply_route_runtime_overrides(
+        route=base_route,
+        router_raw='{"source":"rules"}',
+        user_message="继续，直接去搜代码并执行",
+        attachment_metas=[],
+        settings=ChatSettings(enable_tools=True, response_style="short"),
+        attachment_issues=[],
+        followup_has_attachments=False,
+        followup_attachment_requires_tools=False,
+        force_tool_followup=True,
+    )
+    return {"route": route, "router_raw": raw, "runtime_override_notes": notes, "runtime_override_actions": actions}
+
+
 __all__ = [
     "compact_legacy_session",
     "legacy_capability_bundle_snapshot",
@@ -361,5 +437,7 @@ __all__ = [
     "legacy_role_lab_multi_instance_batch",
     "legacy_role_lab_runtime_snapshot",
     "legacy_role_lab_worker_branch_graph",
+    "legacy_route_runtime_override_attachment_context_requires_tooling",
+    "legacy_route_runtime_override_force_tool_followup",
     "legacy_tool_registry_snapshot",
 ]
