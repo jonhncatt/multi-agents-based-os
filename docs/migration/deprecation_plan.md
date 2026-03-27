@@ -66,6 +66,14 @@ Before `packages/runtime_core/kernel_host.py` can enter class-level retirement w
   - `role-lab`
   - `sandbox`
 
+Status:
+
+- host-structure fallback access: drained
+- route-helper fallback access: drained
+- debug/inspection fallback access: drained
+- office helper tail fallback access: drained
+- current remaining blocker: the compatibility host class is still instantiated and surfaced through legacy assembly/facade paths
+
 ## Sequence
 
 1. migrate office runtime internals into `app/business_modules/office_module/*`
@@ -73,5 +81,5 @@ Before `packages/runtime_core/kernel_host.py` can enter class-level retirement w
 3. observe and shrink `KernelHost.__getattr__` fallback access
 4. move blackboard orchestration into `packages/runtime_core/legacy_host_support.py`
 5. drain host-structure, route-helper, and debug/inspection fallback categories
-6. drain the remaining office helper tail off the mixed host object
+6. evaluate and remove remaining class-level host-object dependencies from runtime assembly
 7. retire legacy capability host coupling

@@ -186,6 +186,37 @@ class OfficeLegacyHelperSurface(ABC):
     def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
         raise NotImplementedError
 
+    @abstractmethod
+    def _summarize_validation_context(self, tool_events: list[Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _hook_before_route_finalize(
+        self,
+        *,
+        route: dict[str, Any],
+        router_raw: str,
+        planner_user_message: str,
+        attachment_issues: list[str],
+        followup_has_attachments: bool,
+        followup_attachment_requires_tools: bool,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _build_followup_topic_hint(self, *, user_message: str, history_turns: list[dict[str, Any]]) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _should_force_initial_tool_execution(
+        self,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+    ) -> bool:
+        raise NotImplementedError
+
 
 def _default_legacy_helper_surface_metrics() -> dict[str, Any]:
     return {
@@ -388,6 +419,54 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         if callable(method):
             return dict(method() or {})
         raise AttributeError("_debug_route_runtime_override_force_tool_followup")
+
+    def _summarize_validation_context(self, tool_events: list[Any]) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_summarize_validation_context", None)
+        if callable(method):
+            return dict(method(tool_events) or {})
+        raise AttributeError("_summarize_validation_context")
+
+    def _hook_before_route_finalize(
+        self,
+        *,
+        route: dict[str, Any],
+        router_raw: str,
+        planner_user_message: str,
+        attachment_issues: list[str],
+        followup_has_attachments: bool,
+        followup_attachment_requires_tools: bool,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+    ) -> Any:
+        method = getattr(self._legacy_runtime, "_hook_before_route_finalize", None)
+        if callable(method):
+            return method(
+                route=route,
+                router_raw=router_raw,
+                planner_user_message=planner_user_message,
+                attachment_issues=attachment_issues,
+                followup_has_attachments=followup_has_attachments,
+                followup_attachment_requires_tools=followup_attachment_requires_tools,
+                attachment_metas=attachment_metas,
+                settings=settings,
+            )
+        raise AttributeError("_hook_before_route_finalize")
+
+    def _build_followup_topic_hint(self, *, user_message: str, history_turns: list[dict[str, Any]]) -> str:
+        method = getattr(self._legacy_runtime, "_build_followup_topic_hint", None)
+        if callable(method):
+            return str(method(user_message=user_message, history_turns=history_turns) or "")
+        raise AttributeError("_build_followup_topic_hint")
+
+    def _should_force_initial_tool_execution(
+        self,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+    ) -> bool:
+        method = getattr(self._legacy_runtime, "_should_force_initial_tool_execution", None)
+        if callable(method):
+            return bool(method(user_message, attachment_metas))
+        raise AttributeError("_should_force_initial_tool_execution")
 
 
 class LegacyOfficeExecutionRuntimeAdapter(OfficeExecutionRuntime):

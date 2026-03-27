@@ -168,6 +168,42 @@ class KernelHost:
     def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
         return dict(self._primary_agent._debug_route_runtime_override_force_tool_followup() or {})
 
+    def _summarize_validation_context(self, tool_events: list[Any]) -> dict[str, Any]:
+        return dict(self._primary_agent._summarize_validation_context(tool_events) or {})
+
+    def _hook_before_route_finalize(
+        self,
+        *,
+        route: dict[str, Any],
+        router_raw: str,
+        planner_user_message: str,
+        attachment_issues: list[str],
+        followup_has_attachments: bool,
+        followup_attachment_requires_tools: bool,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+    ) -> Any:
+        return self._primary_agent._hook_before_route_finalize(
+            route=route,
+            router_raw=router_raw,
+            planner_user_message=planner_user_message,
+            attachment_issues=attachment_issues,
+            followup_has_attachments=followup_has_attachments,
+            followup_attachment_requires_tools=followup_attachment_requires_tools,
+            attachment_metas=attachment_metas,
+            settings=settings,
+        )
+
+    def _build_followup_topic_hint(self, *, user_message: str, history_turns: list[dict[str, Any]]) -> str:
+        return str(self._primary_agent._build_followup_topic_hint(user_message=user_message, history_turns=history_turns) or "")
+
+    def _should_force_initial_tool_execution(
+        self,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+    ) -> bool:
+        return bool(self._primary_agent._should_force_initial_tool_execution(user_message, attachment_metas))
+
     def create_blackboard(
         self,
         *,

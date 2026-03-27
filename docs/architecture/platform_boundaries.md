@@ -52,6 +52,8 @@ The current migration focus for `packages/runtime_core/kernel_host.py` is catego
   - `_debug_route_runtime_override_attachment_context_requires_tooling`
   - `_debug_route_runtime_override_force_tool_followup`
 
+At the current stage, `KernelHost.__getattr__` should no longer be part of the verified runtime path for host-structure, route-helper, debug/inspection, or office-helper compatibility access. The remaining migration question is no longer "what should stop falling through `__getattr__`", but "when can the mixed host object stop existing at all."
+
 ## Retired Compatibility Zones
 
 - `app/router_rules.py`
