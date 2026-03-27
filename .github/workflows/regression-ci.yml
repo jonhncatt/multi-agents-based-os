@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -30,6 +32,23 @@ jobs:
 
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+
+      - name: Resolve platform boundary diff base
+        id: boundary-base
+        run: |
+          if [ -n "${{ github.event.pull_request.base.ref }}" ]; then
+            echo "base=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=origin/main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check platform boundaries
+        run: python scripts/check_platform_boundaries.py --base "${{ steps.boundary-base.outputs.base }}"
+
+      - name: Collect platform metrics
+        run: python scripts/collect_platform_metrics.py
 
       - name: Compile Python files
         run: python -m compileall app scripts
@@ -52,3 +71,10 @@ jobs:
         with:
           name: regression-evals
           path: artifacts/evals
+
+      - name: Upload platform metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-metrics
+          path: artifacts/platform_metrics

@@ -116,6 +116,10 @@ git pull
 - 正式内核入口：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
 - 标准业务模块样板：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
 - 模块接入指南：[docs/modules/module_integration_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/module_integration_guide.md)
+- 平台边界规则：[docs/architecture/platform_boundaries.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/platform_boundaries.md)
+- 兼容层台账：[docs/migration/compatibility_shim_inventory.md](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/compatibility_shim_inventory.md)
+- 里程碑路线图：[docs/roadmap/agent_os_milestones.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/agent_os_milestones.md)
+- 平台指标定义：[docs/operations/platform_metrics.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_metrics.md)
 - packages 边界说明：[packages/README.md](/Users/dalizhou/Desktop/new_validation_agent/packages/README.md)
 
 ### 调试运行时：先看哪里
@@ -158,6 +162,8 @@ pip install -r requirements-dev.txt
 本地完整门禁：
 
 ```bash
+python scripts/check_platform_boundaries.py --base origin/main
+python scripts/collect_platform_metrics.py
 pytest -q tests
 python scripts/run_evals.py --cases evals/gate_cases.json --output artifacts/evals/regression-summary.json
 python scripts/demo_minimal_agent_os.py --check
@@ -165,6 +171,8 @@ python scripts/demo_minimal_agent_os.py --check
 
 CI 会在 push / pull request 上运行：
 
+- `python scripts/check_platform_boundaries.py --base <base-ref>`
+- `python scripts/collect_platform_metrics.py`
 - `pytest -q tests`
 - `python scripts/demo_minimal_agent_os.py --check`
 - `python scripts/run_evals.py --cases evals/gate_cases.json`
@@ -173,6 +181,8 @@ CI 会在 push / pull request 上运行：
 
 - `evals/gate_cases.json` 是稳定门禁集合
 - `evals/cases.json` 保留为更大的探索回归集合
+- compatibility shim 变更会被 platform boundary gate 检查，要求同步更新 shim 台账和退场计划
+- 平台里程碑指标会产出到 `artifacts/platform_metrics/latest.json`
 
 门禁说明见：[docs/operations/quality_gates.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.md)
 
