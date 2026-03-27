@@ -29,7 +29,7 @@
 - `office_module` no longer delegates to `OfficeAgent`
 - Agent OS assembly no longer needs capability-runtime host objects for health/debug
 - office routing/policy helpers fully live behind module-scoped packages
-- integration tests pass without importing compatibility helpers
+- integration tests pass without instantiating compatibility host objects
 
 ## Sequence
 

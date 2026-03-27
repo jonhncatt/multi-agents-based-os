@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.bootstrap import assemble_runtime
+from app.config import load_config
 from packages.office_modules import execution_policy, intent_support, request_analysis, router_hints
 from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBILITY_SHIMS
-from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
 
 
 def test_compatibility_shim_markers_exist() -> None:
@@ -12,7 +13,10 @@ def test_compatibility_shim_markers_exist() -> None:
 
 
 def test_legacy_imports_and_placeholder_docs_remain_available() -> None:
-    assert hasattr(LegacyKernelHost, "run_chat")
+    runtime = assemble_runtime(load_config())
+    legacy = runtime.get_legacy_host()
+    assert legacy is not None
+    assert hasattr(legacy, "run_chat")
     assert Path("packages/agent-core/README.md").is_file()
     assert Path("packages/office-modules/README.md").is_file()
     assert Path("packages/runtime-core/README.md").is_file()

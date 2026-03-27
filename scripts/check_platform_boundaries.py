@@ -29,7 +29,6 @@ ACTIVE_SHIM_IMPORT_ALLOWLIST = {
     },
     "packages.runtime_core.kernel_host": {
         "app/bootstrap/assemble.py",
-        "tests/migration/test_compatibility_shims.py",
     },
 }
 
