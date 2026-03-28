@@ -14,7 +14,7 @@ Current status:
 - `M4` complete
 - `M5` complete
 - `M6` complete
-- `M7` active
+- `M7` complete
 
 ## M1 Platform Boundaries And Baseline Metrics
 
@@ -256,4 +256,3 @@ Make a formal decision on `packages/runtime_core/kernel_host.py`: keep it as an 
 - low-frequency helper cleanup is mistaken for the real class-level retirement decision
 - debug and inspection use-cases are pushed back into the kernel instead of explicit surfaces
 - the class is deleted before facade coverage and migration tests are sufficient
-

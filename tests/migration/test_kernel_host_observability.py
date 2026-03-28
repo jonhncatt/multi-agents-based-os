@@ -30,25 +30,26 @@ class _DummyBlackboard:
         self.failed = error
 
 
-def test_kernel_host_getattr_records_access_and_warns_once(tmp_path: Path, monkeypatch, caplog) -> None:
+def test_legacy_host_accessor_no_longer_uses_kernel_host_getattr_fallback(tmp_path: Path, monkeypatch, caplog) -> None:
     metrics_path = tmp_path / "kernel_host_getattr_accesses.json"
     monkeypatch.setattr(legacy_host_support_mod, "KERNEL_HOST_GETATTR_METRICS_PATH", metrics_path)
     reset_kernel_host_getattr_metrics()
     runtime = assemble_runtime(load_config())
-    helper_surface = runtime.legacy_helper_surface()
+    legacy = runtime.get_legacy_host()
+    assert legacy is not None
 
     with caplog.at_level(logging.WARNING):
-        helper_surface._debug_openai_auth_summary()
-        helper_surface._debug_openai_auth_summary()
+        legacy._debug_openai_auth_summary()
+        legacy._debug_openai_auth_summary()
 
     metrics = read_kernel_host_getattr_metrics()
     snapshot = runtime.debug_kernel_host_snapshot()
     reset_kernel_host_getattr_metrics()
 
-    assert metrics["fallback_access_counts"]["_debug_openai_auth_summary"] == 2
-    assert snapshot["compatibility_getattr"]["fallback_access_counts"]["_debug_openai_auth_summary"] == 2
+    assert metrics["fallback_access_counts"] == {}
+    assert snapshot["compatibility_getattr"]["fallback_access_counts"] == {}
     warning_messages = [record.getMessage() for record in caplog.records]
-    assert len([item for item in warning_messages if "_debug_openai_auth_summary" in item]) == 1
+    assert len([item for item in warning_messages if "KernelHost __getattr__ fallback accessed" in item]) == 0
 
 
 def test_blackboard_orchestration_runs_through_helper_and_preserves_completion_shape() -> None:

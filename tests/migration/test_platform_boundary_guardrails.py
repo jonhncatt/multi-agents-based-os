@@ -14,14 +14,11 @@ def test_shim_metrics_include_active_dependency_counts() -> None:
     dependents = metrics["active_shim_dependents"]
 
     assert counts["app.agent"] == 1
-    assert counts["packages.runtime_core.kernel_host"] == 1
     assert "app/evals.py" not in dependents["app.agent"]
     assert "app/business_modules/office_module/module.py" not in dependents["app.agent"]
     assert "app/core/bootstrap.py" not in dependents["app.agent"]
     assert "packages/office_modules/agent_module.py" in dependents["app.agent"]
-    assert "app/main.py" not in dependents["packages.runtime_core.kernel_host"]
-    assert "app/evals.py" not in dependents["packages.runtime_core.kernel_host"]
-    assert "app/bootstrap/assemble.py" in dependents["packages.runtime_core.kernel_host"]
+    assert "packages.runtime_core.kernel_host" not in dependents
     assert "kernel_host_getattr" in metrics
 
 

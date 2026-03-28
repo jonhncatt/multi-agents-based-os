@@ -11,7 +11,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PROTECTED_SHIMS = {
     "app/agent.py",
-    "packages/runtime_core/kernel_host.py",
 }
 
 RETIRED_SHIM_IMPORTS = {
@@ -19,6 +18,7 @@ RETIRED_SHIM_IMPORTS = {
     "app.router_rules": "packages.office_modules.router_hints",
     "app.request_analysis_support": "packages.office_modules.request_analysis",
     "app.router_intent_support": "packages.office_modules.intent_support",
+    "packages.runtime_core.kernel_host": "AgentOSRuntime explicit legacy facades/helper surfaces",
 }
 
 ACTIVE_SHIM_IMPORT_ALLOWLIST = {
@@ -27,14 +27,12 @@ ACTIVE_SHIM_IMPORT_ALLOWLIST = {
         "app/core/bootstrap.py",
         "packages/office_modules/agent_module.py",
     },
-    "packages.runtime_core.kernel_host": {
-        "app/bootstrap/assemble.py",
-    },
 }
 
 LEGACY_HOST_OBJECT_ACCESS_ALLOWLIST = {
     "app/bootstrap/assemble.py",
     "tests/migration/test_compatibility_shims.py",
+    "tests/migration/test_kernel_host_observability.py",
 }
 
 REQUIRED_DOC_UPDATES = {

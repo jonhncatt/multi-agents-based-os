@@ -25,12 +25,12 @@ HTTP / UI
 - `app/agent.py`
   - Status: compatibility shim runtime
   - Why: `office_module` still delegates to `OfficeAgent`
-- `packages/runtime_core/kernel_host.py`
-  - Status: compatibility shim host
-  - Why: capability-runtime based debug/health surfaces still depend on it
 
 ## Retired Compatibility Paths
 
+- `packages/runtime_core/kernel_host.py`
+  - Status: retired
+  - Replacement: `AgentOSRuntime` explicit legacy facade/helper bindings plus `packages/runtime_core/legacy_host_support.py`
 - `app/execution_policy.py`
   - Status: retired
   - Replacement: `packages/office_modules/execution_policy.py`
@@ -47,10 +47,8 @@ HTTP / UI
 ## Compatibility Shims
 
 - `app.agent.OfficeAgent`
-- `packages.runtime_core.kernel_host.KernelHost`
 
 ## Planned Removal Order
 
 1. Move office prompt/runtime logic fully behind `office_module`
 2. Stop `office_module` from delegating to `OfficeAgent`
-3. Remove direct dependency on `packages/runtime_core/kernel_host.py`

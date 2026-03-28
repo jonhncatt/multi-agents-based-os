@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from app.bootstrap import AgentOSAssembleConfig, assemble_runtime
+from app.bootstrap.assemble import LegacyHostFacade, LegacyRuntimeBindings
 from app.config import load_config
 from app.contracts import TaskRequest
+from packages.office_modules.execution_runtime import adapt_office_legacy_helper_surface
 from tests.support_agent_os import bind_fake_research_provider
 
 
@@ -125,3 +127,37 @@ def test_agent_os_runtime_exposes_legacy_helper_surface() -> None:
     result = helper.run_chat([], "", "hello", [], {})
 
     assert result[0] == "dummy response"
+
+
+def test_agent_os_runtime_facade_does_not_instantiate_legacy_host_for_runtime_methods() -> None:
+    dummy = DummyLegacyHost()
+    instantiated = False
+
+    def _legacy_host_factory() -> Any:
+        nonlocal instantiated
+        instantiated = True
+        raise AssertionError("runtime facade should not instantiate the whole legacy host object")
+
+    def _legacy_runtime_factory() -> LegacyRuntimeBindings:
+        helper_surface = adapt_office_legacy_helper_surface(dummy)
+        return LegacyRuntimeBindings(
+            facade=LegacyHostFacade.from_host(dummy),
+            helper_surface=helper_surface,
+        )
+
+    runtime = assemble_runtime(
+        load_config(),
+        legacy_host_factory=_legacy_host_factory,
+        legacy_runtime_factory=_legacy_runtime_factory,
+    )
+
+    session = {"turns": []}
+    assert runtime.maybe_compact_session(session, 10) is True
+    assert session["compacted"] is True
+    assert runtime.debug_kernel_host_snapshot() == {"host": "ok"}
+    assert runtime.debug_role_lab_runtime_snapshot() == {"role_lab": "ok"}
+    assert runtime.debug_tool_registry_snapshot() == {"tool_registry": "ok"}
+    assert runtime.legacy_tools().docker_status() == (True, "ok")
+    helper = runtime.legacy_helper_surface()
+    assert helper.run_chat([], "", "hello", [], {})[0] == "dummy response"
+    assert instantiated is False

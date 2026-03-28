@@ -79,7 +79,8 @@
 - `packages/agent_core/*`：承接 role runtime / registry / controller / capability orchestration
 - `packages/office_modules/*`：承接 office roles / tools / profiles / support helpers
 - `packages/runtime_core/*`：新增 capability loader，并支持多 capability module 顺序装配
-- `packages/runtime_core/kernel_host.py`：开始把主入口收敛为 `KernelHost`
+- `app/kernel/host.py`：承担正式 `KernelHost`
+- `packages/runtime_core/legacy_host_support.py`：保留兼容期 blackboard/orchestration 与历史 observability helper
 - `packages/runtime_core/blackboard.py`：开始把一次请求的共享状态收敛为 `Blackboard`
 
 ## 当前架构

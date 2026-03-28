@@ -171,9 +171,16 @@ const AGENT_OS_MILESTONES = [
   {
     id: "M6",
     title: "门禁与 shim 退场",
-    status: "active",
-    summary: "module/swarm/shim 门禁已经在 workflow 中收口，且 execution_policy/router_rules/request_analysis_support/router_intent_support 已完成正式退场。",
-    tags: ["workflow gates", "shim retirement", "regression guard", "4 shims retired"],
+    status: "done",
+    summary: "module/swarm/shim 门禁已经在 workflow 中收口，且 kernel_host 在内的兼容主阻塞已正式退场。",
+    tags: ["workflow gates", "shim retirement", "regression guard", "kernel_host retired"],
+  },
+  {
+    id: "M7",
+    title: "Kernel Host 退场决策",
+    status: "done",
+    summary: "kernel_host 已完成 class-level retirement；runtime assembly 改由显式 legacy facade/helper bindings 承接。",
+    tags: ["class retirement", "legacy facade", "boundary gate", "runtime detached"],
   },
 ];
 
@@ -1754,14 +1761,18 @@ function milestoneStatusLabel(status) {
 function renderMilestones() {
   const milestones = Array.isArray(AGENT_OS_MILESTONES) ? AGENT_OS_MILESTONES : [];
   const completedCount = milestones.filter((item) => String(item?.status || "") === "done").length;
-  const current = milestones.find((item) => String(item?.status || "") === "active") || milestones[completedCount] || milestones[0];
+  const current =
+    milestones.find((item) => String(item?.status || "") === "active") ||
+    milestones[completedCount] ||
+    milestones[milestones.length - 1] ||
+    milestones[0];
 
   if (milestoneSidebarView) {
     const lines = [
       `当前阶段: ${String(current?.id || "-")} ${String(current?.title || "")}`.trim(),
       `已完成: ${completedCount}/${milestones.length}`,
       `下一重点: ${String(current?.summary || "等待路线图").trim() || "等待路线图"}`,
-      "路线: M1 -> M2 -> M3 -> M4 -> M5 -> M6",
+      "路线: M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7",
     ];
     milestoneSidebarView.textContent = lines.join("\n");
   }

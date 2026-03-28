@@ -361,10 +361,10 @@ HTTP / UI
 当前 compatibility layers：
 
 - [`app/agent.py`](/Users/dalizhou/Desktop/new_validation_agent/app/agent.py)：legacy OfficeAgent runtime
-- [`packages/runtime_core/kernel_host.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/runtime_core/kernel_host.py)：legacy capability host
 
 已退场 compatibility shim：
 
+- `packages/runtime_core/kernel_host.py` -> `AgentOSRuntime` explicit legacy facade/helper bindings + [`packages/runtime_core/legacy_host_support.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/runtime_core/legacy_host_support.py)
 - `app/execution_policy.py` -> [`packages/office_modules/execution_policy.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/execution_policy.py)
 - `app/router_rules.py` -> [`packages/office_modules/router_hints.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/router_hints.py)
 - `app/request_analysis_support.py` -> [`packages/office_modules/request_analysis.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/request_analysis.py)

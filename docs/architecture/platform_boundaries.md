@@ -25,37 +25,22 @@ Add or evolve logic in these areas when the intent is platform growth:
 These files exist to preserve legacy behavior and migration continuity. They are not valid places for new business heuristics, module-local prompt logic, or Swarm orchestration.
 
 - `app/agent.py`
-- `packages/runtime_core/kernel_host.py`
 
 The preferred pattern for these zones is to push reusable logic into adjacent canonical helpers, leaving the shim file as a thin shell.
 
 For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compaction, auth/capability/kernel/evolution snapshots, role-lab debug demos, runtime-override demos, runtime debug views, and other compatibility-only support code.
 
-For `packages/runtime_core/kernel_host.py`, prefer `packages/runtime_core/legacy_host_support.py` for blackboard orchestration, `__getattr__` fallback observability, and other compatibility-only lifecycle glue. `AgentOSRuntime` should consume explicit legacy facades instead of spreading whole mixed host object access.
+`packages/runtime_core/kernel_host.py` has been retired. The replacement shape is:
 
-The current migration focus for `packages/runtime_core/kernel_host.py` is category-based drain-down:
-
-- host-structure dependencies should use explicit shell methods and facades instead of `__getattr__`
-  - `_role_runtime_controller`
-  - `_module_registry`
-  - `_lc_tools`
-  - `_summarize_turns`
-- route-helper dependencies should use explicit legacy route-helper aliases instead of `__getattr__`
-  - `_route_request_by_rules`
-  - `_build_session_route_state`
-  - `_normalize_route_decision_impl`
-- debug/inspection dependencies should prefer explicit legacy inspection methods instead of `__getattr__`
-  - `_debug_kernel_module_snapshot`
-  - `_debug_tool_registry_snapshot`
-  - `_debug_role_contract_matrix`
-  - `_debug_capability_multi_module_snapshot`
-  - `_debug_route_runtime_override_attachment_context_requires_tooling`
-  - `_debug_route_runtime_override_force_tool_followup`
-
-At the current stage, `KernelHost.__getattr__` should no longer be part of the verified runtime path for host-structure, route-helper, debug/inspection, or office-helper compatibility access. The remaining migration question is no longer "what should stop falling through `__getattr__`", but "when can the mixed host object stop existing at all."
+- `packages/runtime_core/legacy_host_support.py` for blackboard orchestration and historical fallback observability
+- `AgentOSRuntime` explicit legacy facade/helper bindings for `maybe_compact_session`, `health`, `role-lab`, `sandbox`, and compatibility helper access
+- `get_legacy_host()` retained only as an explicit compatibility accessor entrypoint, not a runtime-path mixed host object source
 
 ## Retired Compatibility Zones
 
+- `packages/runtime_core/kernel_host.py`
+  - replaced by explicit `AgentOSRuntime` legacy facade/helper bindings plus `packages/runtime_core/legacy_host_support.py`
+  - must not be reintroduced through runtime imports
 - `app/router_rules.py`
   - replaced by `packages/office_modules/router_hints.py`
   - must not be reintroduced through runtime imports
@@ -93,7 +78,7 @@ The update must state:
 ## Active-Shim Dependency Rule
 
 - Existing active shim dependents are explicitly allowlisted in the boundary gate.
-- New files must not start importing `app.agent` or `packages.runtime_core.kernel_host`.
+- New files must not start importing `app.agent`.
 - New runtime code must not start calling `get_legacy_host()` outside the explicit compatibility allowlist.
 - If a dependency truly must exist, update the allowlist and the shim inventory in the same change, with a retirement reason.
 

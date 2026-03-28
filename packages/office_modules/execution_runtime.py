@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from packages.runtime_core.legacy_host_support import kernel_host_snapshot, read_kernel_host_getattr_metrics
+
 
 LEGACY_RUN_CHAT_FIELDS: tuple[str, ...] = (
     "text",
@@ -164,6 +166,10 @@ class OfficeLegacyHelperSurface(ABC):
 
     @abstractmethod
     def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -389,6 +395,27 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         if callable(method):
             return dict(method() or {})
         raise AttributeError("_debug_kernel_module_snapshot")
+
+    def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "_debug_kernel_host_snapshot", None)
+        if callable(method):
+            return dict(method() or {})
+        capability_runtime = getattr(self._legacy_runtime, "_capability_runtime", None)
+        if capability_runtime is not None:
+            return kernel_host_snapshot(
+                agent_modules=tuple(capability_runtime.agent_modules),
+                primary_agent_module=capability_runtime.primary_agent_module,
+                tool_modules=tuple(capability_runtime.tool_modules),
+                primary_tool_module=capability_runtime.primary_tool_module,
+                output_modules=tuple(capability_runtime.output_modules),
+                primary_output_module=capability_runtime.primary_output_module,
+                memory_modules=tuple(capability_runtime.memory_modules),
+                primary_memory_module=capability_runtime.primary_memory_module,
+                capability_runtime=capability_runtime,
+                blackboard=None,
+                getattr_metrics=read_kernel_host_getattr_metrics(),
+            )
+        raise AttributeError("_debug_kernel_host_snapshot")
 
     def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "_debug_tool_registry_snapshot", None)

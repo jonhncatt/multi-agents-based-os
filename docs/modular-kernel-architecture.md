@@ -42,7 +42,7 @@
 
 当前代码上的第一批对应关系已经补上：
 
-- `KernelHost`：`packages/runtime_core/kernel_host.py`
+- `KernelHost`：`app/kernel/host.py`
 - `Blackboard`：`packages/runtime_core/blackboard.py`
 - `AgentModule` / `ToolModule`：`packages/runtime_core/capability_loader.py`
 - `ToolExecutionBus`：`packages/runtime_core/tool_execution_bus.py`
@@ -50,6 +50,11 @@
 - 默认办公 `ToolModule`：`packages/office_modules/tools.py`
 - 默认办公 `OutputModule`：`packages/office_modules/output_module.py`
 - 默认办公 `MemoryModule`：`packages/office_modules/memory_module.py`
+
+历史 `packages/runtime_core/kernel_host.py` 已完成退场。兼容能力已收敛到：
+
+- `packages/runtime_core/legacy_host_support.py`
+- `AgentOSRuntime` 显式 legacy facade/helper bindings
 
 当前对外可见的 capability modules 已开始细化为：
 

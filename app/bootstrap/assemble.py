@@ -10,12 +10,14 @@ from app.contracts import TaskRequest, TaskResponse, ToolContract
 from app.kernel import KernelHost
 from app.local_tools import LocalToolExecutor
 from app.system_modules import MemoryModule, OutputModule, PolicyModule, ToolRuntimeModule
+from packages.office_modules.agent_module import create_office_legacy_surface
 from packages.office_modules.execution_runtime import OfficeLegacyHelperSurface, adapt_office_legacy_helper_surface
 from packages.office_modules.legacy_runtime_support import (
     compact_legacy_session,
     legacy_role_lab_runtime_snapshot,
     legacy_tool_registry_snapshot,
 )
+from packages.runtime_core.legacy_host_support import kernel_host_snapshot, read_kernel_host_getattr_metrics
 from app.tool_providers import (
     HttpWebProvider,
     LocalFileProvider,
@@ -103,37 +105,110 @@ _DEFAULT_TOOL_CONTRACTS: tuple[ToolContract, ...] = (
 
 @dataclass(slots=True)
 class LegacyHostFacade:
-    host: Any
+    _tools_getter: Callable[[], Any]
+    _compact_session: Callable[[dict[str, Any], int], bool]
+    _debug_kernel_snapshot: Callable[[], dict[str, Any]]
+    _debug_role_lab_snapshot: Callable[[], dict[str, Any]]
+    _debug_tool_registry_snapshot: Callable[[], dict[str, Any]]
+
+    @classmethod
+    def from_host(cls, host: Any) -> "LegacyHostFacade":
+        return cls(
+            _tools_getter=lambda: host.tools,
+            _compact_session=lambda session, keep_last_turns: _compact_session_from_host(
+                host,
+                session,
+                keep_last_turns,
+            ),
+            _debug_kernel_snapshot=lambda: dict(host._debug_kernel_host_snapshot() or {}),
+            _debug_role_lab_snapshot=lambda: _debug_role_lab_snapshot_from_host(host),
+            _debug_tool_registry_snapshot=lambda: _debug_tool_registry_snapshot_from_host(host),
+        )
+
+    @classmethod
+    def from_helper_surface(cls, helper_surface: OfficeLegacyHelperSurface) -> "LegacyHostFacade":
+        return cls(
+            _tools_getter=lambda: helper_surface.tools,
+            _compact_session=lambda session, keep_last_turns: bool(
+                compact_legacy_session(helper_surface, session, keep_last_turns)
+            ),
+            _debug_kernel_snapshot=lambda: _debug_kernel_snapshot_from_helper_surface(helper_surface),
+            _debug_role_lab_snapshot=lambda: dict(legacy_role_lab_runtime_snapshot(helper_surface) or {}),
+            _debug_tool_registry_snapshot=lambda: dict(legacy_tool_registry_snapshot(helper_surface) or {}),
+        )
 
     def tools(self) -> Any:
-        return self.host.tools
+        return self._tools_getter()
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
-        method = getattr(self.host, "compact_session", None)
-        if callable(method):
-            return bool(method(session, keep_last_turns))
-        if hasattr(self.host, "_summarize_turns") and hasattr(self.host, "config"):
-            return bool(compact_legacy_session(self.host, session, keep_last_turns))
-        return bool(self.host.maybe_compact_session(session, keep_last_turns))
+        return bool(self._compact_session(session, keep_last_turns))
 
     def debug_kernel_host_snapshot(self) -> dict[str, Any]:
-        return dict(self.host._debug_kernel_host_snapshot() or {})
+        return dict(self._debug_kernel_snapshot() or {})
 
     def debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
-        method = getattr(self.host, "role_lab_runtime_snapshot", None)
-        if callable(method):
-            return dict(method() or {})
-        if hasattr(self.host, "_role_runtime_controller"):
-            return dict(legacy_role_lab_runtime_snapshot(self.host) or {})
-        return dict(self.host._debug_role_lab_runtime_snapshot() or {})
+        return dict(self._debug_role_lab_snapshot() or {})
 
     def debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        method = getattr(self.host, "tool_registry_snapshot", None)
-        if callable(method):
-            return dict(method() or {})
-        if hasattr(self.host, "_module_registry") and hasattr(self.host, "_lc_tools"):
-            return dict(legacy_tool_registry_snapshot(self.host) or {})
-        return dict(self.host._debug_tool_registry_snapshot() or {})
+        return dict(self._debug_tool_registry_snapshot() or {})
+
+
+@dataclass(slots=True)
+class LegacyRuntimeBindings:
+    facade: LegacyHostFacade
+    helper_surface: OfficeLegacyHelperSurface
+
+
+def _compact_session_from_host(host: Any, session: dict[str, Any], keep_last_turns: int) -> bool:
+    method = getattr(host, "compact_session", None)
+    if callable(method):
+        return bool(method(session, keep_last_turns))
+    if hasattr(host, "_summarize_turns") and hasattr(host, "config"):
+        return bool(compact_legacy_session(host, session, keep_last_turns))
+    return bool(host.maybe_compact_session(session, keep_last_turns))
+
+
+def _debug_role_lab_snapshot_from_host(host: Any) -> dict[str, Any]:
+    method = getattr(host, "role_lab_runtime_snapshot", None)
+    if callable(method):
+        return dict(method() or {})
+    if hasattr(host, "_role_runtime_controller"):
+        return dict(legacy_role_lab_runtime_snapshot(host) or {})
+    return dict(host._debug_role_lab_runtime_snapshot() or {})
+
+
+def _debug_tool_registry_snapshot_from_host(host: Any) -> dict[str, Any]:
+    method = getattr(host, "tool_registry_snapshot", None)
+    if callable(method):
+        return dict(method() or {})
+    if hasattr(host, "_module_registry") and hasattr(host, "_lc_tools"):
+        return dict(legacy_tool_registry_snapshot(host) or {})
+    return dict(host._debug_tool_registry_snapshot() or {})
+
+
+def _debug_kernel_snapshot_from_helper_surface(helper_surface: OfficeLegacyHelperSurface) -> dict[str, Any]:
+    capability_runtime = getattr(helper_surface, "_capability_runtime")
+    return kernel_host_snapshot(
+        agent_modules=tuple(capability_runtime.agent_modules),
+        primary_agent_module=capability_runtime.primary_agent_module,
+        tool_modules=tuple(capability_runtime.tool_modules),
+        primary_tool_module=capability_runtime.primary_tool_module,
+        output_modules=tuple(capability_runtime.output_modules),
+        primary_output_module=capability_runtime.primary_output_module,
+        memory_modules=tuple(capability_runtime.memory_modules),
+        primary_memory_module=capability_runtime.primary_memory_module,
+        capability_runtime=capability_runtime,
+        blackboard=None,
+        getattr_metrics=read_kernel_host_getattr_metrics(),
+    )
+
+
+def _legacy_runtime_bindings_from_host(host: Any) -> LegacyRuntimeBindings:
+    helper_surface = adapt_office_legacy_helper_surface(host)
+    return LegacyRuntimeBindings(
+        facade=LegacyHostFacade.from_host(host),
+        helper_surface=helper_surface,
+    )
 
 
 @dataclass(slots=True)
@@ -143,40 +218,37 @@ class AgentOSRuntime:
     system_modules: dict[str, object]
     business_modules: dict[str, object]
     providers: dict[str, object]
+    _legacy_runtime: LegacyRuntimeBindings | None = None
+    _legacy_runtime_factory: Callable[[], LegacyRuntimeBindings] | None = None
     _legacy_host: Any | None = None
     _legacy_host_factory: Callable[[], Any] | None = None
-    _legacy_host_facade: LegacyHostFacade | None = None
-    _legacy_helper_surface: OfficeLegacyHelperSurface | None = None
 
     def bind_legacy_host(self, host: Any) -> None:
         self._legacy_host = host
-        self._legacy_host_facade = LegacyHostFacade(host)
-        self._legacy_helper_surface = adapt_office_legacy_helper_surface(host)
-        self.office_module.bind_legacy_host(self._legacy_helper_surface)
+        self._legacy_runtime = _legacy_runtime_bindings_from_host(host)
+        self.office_module.bind_legacy_host(self._legacy_runtime.helper_surface)
+
+    def _ensure_legacy_runtime(self) -> LegacyRuntimeBindings:
+        if self._legacy_runtime is not None:
+            return self._legacy_runtime
+        if self._legacy_runtime_factory is None:
+            raise RuntimeError("Legacy runtime bindings are unavailable from AgentOSRuntime")
+        self._legacy_runtime = self._legacy_runtime_factory()
+        return self._legacy_runtime
 
     def get_legacy_host(self) -> Any | None:
         if self._legacy_host is not None:
             return self._legacy_host
-        if self._legacy_host_factory is None:
-            return None
-        self.bind_legacy_host(self._legacy_host_factory())
-        return self._legacy_host
+        if self._legacy_host_factory is not None:
+            self.bind_legacy_host(self._legacy_host_factory())
+            return self._legacy_host
+        return self.legacy_helper_surface()
 
     def _require_legacy_facade(self) -> LegacyHostFacade:
-        if self._legacy_host_facade is not None:
-            return self._legacy_host_facade
-        host = self.get_legacy_host()
-        if host is None or self._legacy_host_facade is None:
-            raise RuntimeError("Legacy host facade is unavailable from AgentOSRuntime")
-        return self._legacy_host_facade
+        return self._ensure_legacy_runtime().facade
 
     def legacy_helper_surface(self) -> OfficeLegacyHelperSurface:
-        if self._legacy_helper_surface is not None:
-            return self._legacy_helper_surface
-        host = self.get_legacy_host()
-        if host is None or self._legacy_helper_surface is None:
-            raise RuntimeError("Office legacy helper surface is unavailable from AgentOSRuntime")
-        return self._legacy_helper_surface
+        return self._ensure_legacy_runtime().helper_surface
 
     def legacy_tools(self) -> Any:
         return self._require_legacy_facade().tools()
@@ -210,7 +282,6 @@ class AgentOSRuntime:
             ),
             "compatibility_shims": [
                 "app.agent.OfficeAgent",
-                "packages.runtime_core.kernel_host.KernelHost",
             ],
         }
 
@@ -233,15 +304,20 @@ def _register_default_tool_contracts(kernel: KernelHost) -> None:
         )
 
 
-def _build_default_legacy_host_factory(
+def _build_default_legacy_runtime_factory(
     app_config: AppConfig,
     *,
     kernel_runtime: Any | None,
-) -> Callable[[], Any]:
-    def _factory() -> Any:
-        from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
-
-        return LegacyKernelHost(app_config, kernel_runtime=kernel_runtime)
+) -> Callable[[], LegacyRuntimeBindings]:
+    def _factory() -> LegacyRuntimeBindings:
+        helper_surface = create_office_legacy_surface(
+            app_config,
+            kernel_runtime=kernel_runtime,
+        )
+        return LegacyRuntimeBindings(
+            facade=LegacyHostFacade.from_helper_surface(helper_surface),
+            helper_surface=helper_surface,
+        )
 
     return _factory
 
@@ -252,14 +328,16 @@ def assemble_runtime(
     kernel_runtime: Any | None = None,
     legacy_host: Any | None = None,
     legacy_host_factory: Callable[[], Any] | None = None,
+    legacy_runtime_factory: Callable[[], LegacyRuntimeBindings] | None = None,
     assemble_config: AgentOSAssembleConfig | None = None,
 ) -> AgentOSRuntime:
     cfg = assemble_config or build_assemble_config(app_config)
     kernel = KernelHost(kernel_version=cfg.kernel_version)
     shared_executor = LocalToolExecutor(app_config)
     resolved_legacy_host_factory = legacy_host_factory
-    if legacy_host is None and resolved_legacy_host_factory is None:
-        resolved_legacy_host_factory = _build_default_legacy_host_factory(
+    resolved_legacy_runtime_factory = legacy_runtime_factory
+    if legacy_host is None and resolved_legacy_runtime_factory is None:
+        resolved_legacy_runtime_factory = _build_default_legacy_runtime_factory(
             app_config,
             kernel_runtime=kernel_runtime,
         )
@@ -310,6 +388,7 @@ def assemble_runtime(
         system_modules=system_modules,
         business_modules=business_modules,
         providers=providers,
+        _legacy_runtime_factory=resolved_legacy_runtime_factory,
         _legacy_host=legacy_host,
         _legacy_host_factory=resolved_legacy_host_factory,
     )
