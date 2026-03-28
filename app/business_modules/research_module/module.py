@@ -9,6 +9,7 @@ from app.business_modules.research_module.manifest import RESEARCH_MODULE_MANIFE
 from app.business_modules.research_module.pipeline.runtime import (
     aggregate_research_swarm_results,
     build_research_pipeline_trace,
+    build_research_swarm_business_output,
     build_research_swarm_pipeline_trace,
     build_research_swarm_summary,
 )
@@ -322,6 +323,11 @@ class ResearchModule:
             branch_results=final_results,
             degradation_decisions=degradation_decisions,
         )
+        business_output = build_research_swarm_business_output(
+            branch_results=final_results,
+            aggregation_result=aggregation_result,
+            degradation_decisions=degradation_decisions,
+        )
         module_pipeline = build_research_swarm_pipeline_trace(
             swarm_run_id=swarm_run_id,
             branch_specs=branch_specs,
@@ -382,6 +388,7 @@ class ResearchModule:
                 "join_spec": join_spec.to_dict(),
                 "branches": final_results,
                 "aggregation": aggregation_result.to_dict(),
+                "business_output": business_output,
                 "degradation": {
                     "degraded": bool(degradation_decisions),
                     "decisions": [item.to_dict() for item in degradation_decisions],
@@ -428,6 +435,11 @@ class ResearchModule:
                 "attempt_mode": attempt_mode,
             },
         )
+        assessment = self._assess_research_result(
+            query=spec.objective,
+            result=result,
+            fetch_requested=fetch_top,
+        )
         payload = {
             "branch_id": spec.branch_id,
             "branch_label": str(spec.metadata.get("label") or spec.input_ref),
@@ -440,10 +452,21 @@ class ResearchModule:
             "top_source": result["top_source"],
             "search": result["search"],
             "fetch": result["fetch"],
-            "warnings": list(result["warnings"]),
+            "warnings": list(result["warnings"]) + [
+                warning for warning in list(assessment["warnings"]) if warning not in list(result["warnings"])
+            ],
             "attempt_mode": attempt_mode,
             "selected_tools": list(result["selected_tools"]),
             "selected_providers": list(result["selected_providers"]),
+            "result_grade": assessment["result_grade"],
+            "return_strategy": assessment["return_strategy"],
+            "evidence_completeness": assessment["evidence_completeness"],
+            "provider_fallback_used": assessment["provider_fallback_used"],
+            "fetch_success": assessment["fetch_success"],
+            "partial_results": assessment["partial_results"],
+            "conflict_detected": assessment["conflict_detected"],
+            "conflicts": list(assessment["conflicts"]),
+            "reliability_note": assessment["reliability_note"],
             "elapsed_ms": max(0, int((time.perf_counter() - started) * 1000)),
         }
         return payload

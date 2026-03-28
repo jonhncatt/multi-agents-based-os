@@ -27,15 +27,26 @@
         "payload.module_id": "research_module",
         "payload.swarm.branch_count": 3,
         "payload.swarm.degradation.degraded": false,
-        "payload.swarm.aggregation.conflicts": []
+        "payload.swarm.aggregation.conflicts": [],
+        "payload.swarm.business_output.overall_summary.branch_count": 3,
+        "payload.swarm.business_output.per_branch_evidence.0.branch_status": "success",
+        "payload.swarm.business_output.per_branch_evidence.1.included_in_final_merge": true,
+        "payload.swarm.business_output.conflict_and_degradation_notes.conflict_detected": false
       },
       "contains": {
         "text": [
-          "Research swarm processed 3 input(s)",
-          "Aggregator found no conflicting top-source titles across branches."
+          "Research swarm reviewed 3 branch(es)",
+          "Final merge decision:"
         ],
-        "payload.swarm.aggregation.summary": [
-          "merged 2 unique findings from 3 branch(es) and marked 0 conflict(s)"
+        "payload.swarm.business_output.overall_summary.summary_text": [
+          "reviewed 3 branch(es)",
+          "merged 2 final finding(s)"
+        ],
+        "payload.swarm.business_output.per_branch_evidence.0.branch_summary": [
+          "contributed to the final merge"
+        ],
+        "payload.swarm.business_output.conflict_and_degradation_notes.final_merge_decision": [
+          "Merged branch evidence without conflict handling or degradation recovery."
         ]
       }
     }
@@ -69,20 +80,40 @@
         "payload.swarm.branch_count": 3,
         "payload.swarm.degradation.degraded": true,
         "payload.swarm.branches.2.attempt_mode": "serial_replay",
-        "payload.swarm.aggregation.conflicts.0.title": "Shared Research Conflict"
+        "payload.swarm.aggregation.conflicts.0.title": "Shared Research Conflict",
+        "payload.swarm.business_output.per_branch_evidence.2.branch_status": "degraded",
+        "payload.swarm.business_output.per_branch_evidence.2.included_in_final_merge": true,
+        "payload.swarm.business_output.conflict_and_degradation_notes.conflict_detected": true,
+        "payload.swarm.business_output.conflict_and_degradation_notes.degraded_branches.0.branch_id": "branch-3"
       },
       "contains": {
         "text": [
-          "Research swarm processed 3 input(s)",
-          "Degradation handling: serial replay was triggered",
-          "Aggregator marked conflict(s) without forced arbitration"
+          "Research swarm reviewed 3 branch(es)",
+          "Degradation handling:",
+          "Final merge decision:",
+          "Reliability note:"
         ],
-        "payload.swarm.aggregation.summary": [
-          "marked 1 conflict(s)"
+        "payload.swarm.business_output.overall_summary.summary_text": [
+          "kept 1 conflict marker(s)"
         ],
+        "payload.swarm.business_output.conflict_and_degradation_notes.conflict_summary": [
+          "Shared Research Conflict",
+          "kept the conflicting evidence marked"
+        ],
+        "payload.swarm.business_output.conflict_and_degradation_notes.degradation_reason": [
+          "serial_replay triggered for 1 branch(es)"
+        ],
+        "payload.swarm.business_output.per_branch_evidence.2.branch_summary": [
+          "Recovered through serial replay",
+          "contributed to the final merge"
+        ],
+        "payload.swarm.business_output.conflict_and_degradation_notes.final_merge_decision": [
+          "kept conflict markers"
+        ]
+      },
+      "contains_any": {
         "trace_stages": [
-          "swarm_degradation",
-          "swarm_join"
+          "swarm_degradation"
         ]
       }
     }

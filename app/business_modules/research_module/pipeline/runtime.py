@@ -206,30 +206,231 @@ def build_research_swarm_summary(
     aggregation_result: SwarmAggregationResult,
     degradation_decisions: list[SwarmDegradationDecision],
 ) -> str:
-    lines = [
-        (
-            f"Research swarm processed {len(branch_results)} input(s) and merged "
-            f"{len(aggregation_result.merged_items)} unique finding(s)."
-        )
-    ]
-    for result in branch_results:
-        label = str(result.get("branch_label") or result.get("input_ref") or result.get("branch_id") or "branch").strip()
-        top_source = dict(result.get("top_source") or {})
-        top_title = str(top_source.get("title") or top_source.get("url") or "no top source").strip()
-        attempt_mode = str(result.get("attempt_mode") or "parallel")
-        status = "ok" if bool(result.get("ok")) else "failed"
-        lines.append(
-            f"- {label}: {status}, {int(result.get('source_count') or 0)} source(s), top source {top_title}, attempt={attempt_mode}."
-        )
-    if degradation_decisions:
-        replayed = ", ".join(
-            str(item.details.get("branch_id") or item.trigger).strip() or item.trigger for item in degradation_decisions
-        )
-        lines.append(f"Degradation handling: serial replay was triggered for {replayed}.")
-    if aggregation_result.conflicts:
-        conflict_titles = ", ".join(str(item.get("title") or "conflict").strip() for item in aggregation_result.conflicts)
-        lines.append(f"Aggregator marked conflict(s) without forced arbitration: {conflict_titles}.")
-    else:
-        lines.append("Aggregator found no conflicting top-source titles across branches.")
-    lines.append(aggregation_result.summary)
+    business_output = build_research_swarm_business_output(
+        branch_results=branch_results,
+        aggregation_result=aggregation_result,
+        degradation_decisions=degradation_decisions,
+    )
+    lines = [str(business_output["overall_summary"]["summary_text"]).strip()]
+    for branch in list(business_output["per_branch_evidence"]):
+        lines.append(f"- {branch['branch_label']}: {branch['branch_summary']}")
+    notes = dict(business_output["conflict_and_degradation_notes"])
+    if str(notes.get("conflict_summary") or "").strip():
+        lines.append(str(notes["conflict_summary"]).strip())
+    if str(notes.get("degradation_reason") or "").strip():
+        lines.append(f"Degradation handling: {notes['degradation_reason']}")
+    lines.append(f"Final merge decision: {notes['final_merge_decision']}")
+    lines.append(f"Reliability note: {notes['reliability_note']}")
     return "\n".join(lines)
+
+
+def build_research_swarm_business_output(
+    *,
+    branch_results: list[dict[str, Any]],
+    aggregation_result: SwarmAggregationResult,
+    degradation_decisions: list[SwarmDegradationDecision],
+) -> dict[str, Any]:
+    merged_branch_ids = {
+        str(branch_id).strip()
+        for item in aggregation_result.merged_items
+        for branch_id in list(item.get("branch_ids") or [])
+        if str(branch_id).strip()
+    }
+    per_branch_evidence: list[dict[str, Any]] = []
+    degraded_branches: list[dict[str, Any]] = []
+    failed_branch_count = 0
+    degraded_branch_count = 0
+    successful_branch_count = 0
+
+    for result in branch_results:
+        branch_id = str(result.get("branch_id") or "").strip()
+        branch_label = str(result.get("branch_label") or result.get("input_ref") or branch_id or "branch").strip()
+        branch_status = _branch_status(result)
+        included_in_final_merge = bool(branch_id) and branch_id in merged_branch_ids
+        not_included_reason = _not_included_reason(result=result, included_in_final_merge=included_in_final_merge)
+        branch_summary = _branch_summary(
+            result=result,
+            branch_status=branch_status,
+            included_in_final_merge=included_in_final_merge,
+            not_included_reason=not_included_reason,
+        )
+        evidence_items = []
+        for item in list(result.get("sources") or [])[:3]:
+            evidence_items.append(
+                {
+                    "title": str(item.get("title") or item.get("url") or "Untitled source").strip(),
+                    "url": str(item.get("url") or "").strip(),
+                    "domain": str(item.get("domain") or "").strip(),
+                }
+            )
+        record = {
+            "branch_id": branch_id,
+            "branch_label": branch_label,
+            "branch_status": branch_status,
+            "branch_summary": branch_summary,
+            "branch_evidence_count": int(result.get("source_count") or 0),
+            "included_in_final_merge": included_in_final_merge,
+            "not_included_reason": not_included_reason,
+            "result_grade": str(result.get("result_grade") or ""),
+            "evidence_completeness": str(result.get("evidence_completeness") or ""),
+            "branch_evidence": evidence_items,
+        }
+        per_branch_evidence.append(record)
+        if branch_status == "failed":
+            failed_branch_count += 1
+        elif branch_status == "degraded":
+            degraded_branch_count += 1
+            degraded_branches.append(
+                {
+                    "branch_id": branch_id,
+                    "branch_label": branch_label,
+                    "degradation_reason": _degraded_branch_reason(result),
+                }
+            )
+        else:
+            successful_branch_count += 1
+
+    conflict_detected = bool(aggregation_result.conflicts)
+    conflict_summary = _conflict_summary(aggregation_result.conflicts)
+    degradation_reason = (
+        str(aggregation_result.degradation_reason).strip()
+        if aggregation_result.degraded
+        else "No branch required degradation handling."
+    )
+    final_merge_decision = _final_merge_decision(
+        aggregation_result=aggregation_result,
+        failed_branch_count=failed_branch_count,
+    )
+    reliability_note = _reliability_note(
+        aggregation_result=aggregation_result,
+        degraded_branch_count=degraded_branch_count,
+        failed_branch_count=failed_branch_count,
+    )
+    overall_summary = {
+        "summary_text": (
+            f"Research swarm reviewed {len(branch_results)} branch(es), merged "
+            f"{len(aggregation_result.merged_items)} final finding(s), and kept "
+            f"{len(aggregation_result.conflicts)} conflict marker(s)."
+        ),
+        "branch_count": len(branch_results),
+        "successful_branch_count": successful_branch_count,
+        "degraded_branch_count": degraded_branch_count,
+        "failed_branch_count": failed_branch_count,
+        "merged_finding_count": len(aggregation_result.merged_items),
+    }
+    return {
+        "overall_summary": overall_summary,
+        "per_branch_evidence": per_branch_evidence,
+        "conflict_and_degradation_notes": {
+            "conflict_detected": conflict_detected,
+            "conflict_summary": conflict_summary,
+            "degraded_branches": degraded_branches,
+            "degradation_reason": degradation_reason,
+            "final_merge_decision": final_merge_decision,
+            "reliability_note": reliability_note,
+        },
+    }
+
+
+def _branch_status(result: dict[str, Any]) -> str:
+    if not bool(result.get("ok")):
+        return "failed"
+    if bool(result.get("degraded")):
+        return "degraded"
+    grade = str(result.get("result_grade") or "").strip()
+    if grade == "degraded":
+        return "degraded"
+    return "success"
+
+
+def _not_included_reason(*, result: dict[str, Any], included_in_final_merge: bool) -> str:
+    if included_in_final_merge:
+        return ""
+    if not bool(result.get("ok")):
+        return "This branch failed and could not contribute evidence to the final merge."
+    if int(result.get("source_count") or 0) <= 0:
+        return "This branch returned no usable evidence."
+    if not dict(result.get("top_source") or {}):
+        return "This branch had evidence, but no top source was selected for the final merge."
+    return "This branch did not contribute a distinct top source to the final merge."
+
+
+def _branch_summary(
+    *,
+    result: dict[str, Any],
+    branch_status: str,
+    included_in_final_merge: bool,
+    not_included_reason: str,
+) -> str:
+    source_count = int(result.get("source_count") or 0)
+    top_source = dict(result.get("top_source") or {})
+    top_title = str(top_source.get("title") or top_source.get("url") or "no top source").strip()
+    if branch_status == "failed":
+        return f"Failed to produce usable evidence. {not_included_reason}".strip()
+    if branch_status == "degraded":
+        if bool(result.get("degraded")):
+            return (
+                f"Recovered through serial replay, gathered {source_count} source(s), and "
+                f"{'contributed to' if included_in_final_merge else 'did not contribute to'} the final merge. "
+                f"Top evidence: {top_title}."
+            )
+        note = str(result.get("reliability_note") or "").strip()
+        return (
+            f"Produced {source_count} source(s) with degraded confidence. "
+                f"Top evidence: {top_title}. {note}"
+        ).strip()
+    note = str(result.get("reliability_note") or "").strip()
+    if str(result.get("result_grade") or "").strip() == "insufficient_evidence" and note:
+        return (
+            f"Produced {source_count} source(s) and contributed to the final merge, "
+            f"but the evidence is not fully reliable. Top evidence: {top_title}. {note}"
+        ).strip()
+    return (
+        f"Produced {source_count} source(s) and contributed to the final merge. "
+        f"Top evidence: {top_title}."
+    )
+
+
+def _degraded_branch_reason(result: dict[str, Any]) -> str:
+    if bool(result.get("degraded")):
+        return "The branch failed during parallel execution and was recovered through serial replay."
+    return str(result.get("reliability_note") or "The branch produced usable but incomplete evidence.").strip()
+
+
+def _conflict_summary(conflicts: list[dict[str, Any]]) -> str:
+    if not conflicts:
+        return "No cross-branch conflict was detected in the final evidence set."
+    titles = ", ".join(str(item.get("title") or "conflict").strip() for item in conflicts)
+    return (
+        f"Conflict detected across branch evidence for: {titles}. "
+        "The system kept the conflicting evidence marked instead of forcing arbitration."
+    )
+
+
+def _final_merge_decision(
+    *,
+    aggregation_result: SwarmAggregationResult,
+    failed_branch_count: int,
+) -> str:
+    if aggregation_result.conflicts and failed_branch_count:
+        return "Merged usable branch evidence, kept conflict markers, and excluded failed branches from the final merge."
+    if aggregation_result.conflicts:
+        return "Merged usable branch evidence and kept conflict markers instead of forcing a single winner."
+    if aggregation_result.degraded:
+        return "Merged usable branch evidence after recovery handling for degraded branches."
+    return "Merged branch evidence without conflict handling or degradation recovery."
+
+
+def _reliability_note(
+    *,
+    aggregation_result: SwarmAggregationResult,
+    degraded_branch_count: int,
+    failed_branch_count: int,
+) -> str:
+    if failed_branch_count:
+        return "The overall result is incomplete because at least one branch failed and could not be merged."
+    if aggregation_result.conflicts:
+        return "The overall result is usable, but some branch evidence conflicts and should be read with caution."
+    if degraded_branch_count:
+        return "The overall result is usable, but at least one branch needed degraded recovery handling."
+    return "The overall result is supported by branch evidence with no marked conflicts."

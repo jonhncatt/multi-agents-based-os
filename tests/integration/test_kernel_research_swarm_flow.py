@@ -40,11 +40,18 @@ def test_kernel_dispatch_research_swarm_request_handles_serial_replay_and_join_t
 
     assert response.ok is True
     swarm = dict(response.payload.get("swarm") or {})
+    business = dict(swarm.get("business_output") or {})
     assert swarm["branch_count"] == 3
     assert swarm["degradation"]["degraded"] is True
     assert len(swarm["aggregation"]["conflicts"]) >= 1
     assert any(item["attempt_mode"] == "serial_replay" for item in swarm["branches"])
-    assert "serial replay was triggered" in response.text.lower()
+    assert business["overall_summary"]["branch_count"] == 3
+    assert business["per_branch_evidence"][2]["branch_status"] == "degraded"
+    assert business["per_branch_evidence"][2]["included_in_final_merge"] is True
+    assert business["conflict_and_degradation_notes"]["conflict_detected"] is True
+    assert "Shared Research Conflict" in business["conflict_and_degradation_notes"]["conflict_summary"]
+    assert "serial_replay triggered" in business["conflict_and_degradation_notes"]["degradation_reason"]
+    assert "Reliability note:" in response.text
 
     trace = runtime.kernel.health_snapshot()["recent_traces"][-1]
     assert trace["module_id"] == "research_module"

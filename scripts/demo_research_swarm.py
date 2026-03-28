@@ -150,12 +150,18 @@ def run_demo(*, check: bool) -> int:
     )
 
     trace = runtime.kernel.health_snapshot()["recent_traces"][-1]
+    business = response.payload["swarm"]["business_output"]
     if check:
         assert response.ok is True
         assert response.payload["module_id"] == "research_module"
         assert response.payload["swarm"]["branch_count"] == 3
         assert response.payload["swarm"]["degradation"]["degraded"] is True
         assert len(response.payload["swarm"]["aggregation"]["conflicts"]) >= 1
+        assert "overall_summary" in business
+        assert "per_branch_evidence" in business
+        assert "conflict_and_degradation_notes" in business
+        assert business["per_branch_evidence"][2]["branch_status"] == "degraded"
+        assert business["conflict_and_degradation_notes"]["conflict_detected"] is True
         stages = [event["stage"] for event in trace["events"]]
         assert "swarm_branch_plan" in stages
         assert "swarm_degradation" in stages
@@ -165,10 +171,22 @@ def run_demo(*, check: bool) -> int:
 
     print("Research Swarm MVP Demo")
     print("========================")
-    print(response.text)
+    print(business["overall_summary"]["summary_text"])
     print()
-    print("Join summary:")
-    print(response.payload["swarm"]["aggregation"]["summary"])
+    print("Per-branch evidence:")
+    for item in business["per_branch_evidence"]:
+        print(
+            f"- {item['branch_label']} [{item['branch_status']}]: {item['branch_summary']} "
+            f"(evidence={item['branch_evidence_count']}, included={item['included_in_final_merge']})"
+        )
+    print()
+    print("Conflict and degradation notes:")
+    notes = business["conflict_and_degradation_notes"]
+    print(f"- conflict_detected: {notes['conflict_detected']}")
+    print(f"- conflict_summary: {notes['conflict_summary']}")
+    print(f"- degradation_reason: {notes['degradation_reason']}")
+    print(f"- final_merge_decision: {notes['final_merge_decision']}")
+    print(f"- reliability_note: {notes['reliability_note']}")
     print()
     print("Trace stages:")
     for event in trace["events"]:

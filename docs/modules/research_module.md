@@ -84,6 +84,10 @@ This demo proves:
 - multiple research inputs can be processed in parallel
 - branch failure degrades through `serial_replay`
 - the Aggregator only merges, deduplicates, and marks conflicts
+- the Swarm payload exposes a business-readable output block with:
+  - `overall_summary`
+  - `per_branch_evidence`
+  - `conflict_and_degradation_notes`
 - trace output exposes `swarm_branch_plan`, `swarm_degradation`, and `swarm_join`
 
 Readable demo notes:
