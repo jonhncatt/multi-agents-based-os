@@ -4,7 +4,7 @@ This roadmap tracks the next execution phase as milestones instead of calendar w
 
 Execution order is fixed:
 
-`M1 -> M2 -> M3 -> M4 -> M5 -> M6`
+`M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7`
 
 Current status:
 
@@ -13,7 +13,8 @@ Current status:
 - `M3` complete
 - `M4` complete
 - `M5` complete
-- `M6` active
+- `M6` complete
+- `M7` active
 
 ## M1 Platform Boundaries And Baseline Metrics
 
@@ -223,3 +224,36 @@ Turn platform intent into merge rules and retire at least one active shim for re
 
 - Do not turn the second module into an `office_module` pseudo-split.
 - Do not turn the first Swarm MVP into a new kernel rewrite.
+
+
+## M7 Kernel Host Retirement Decision
+
+### Goal
+
+Make a formal decision on `packages/runtime_core/kernel_host.py`: keep it as an ultra-thin compatibility shell or retire the class-level host object entirely.
+
+### Outputs
+
+- low-frequency fallback triage
+- class-level retirement decision memo
+- explicit facade-vs-class rationale
+- deletion preconditions for `__getattr__` and the host class
+
+### Exit Criteria
+
+- low-frequency fallback items are classified into:
+  - must retire before class-level retirement
+  - move to explicit debug/inspection surface
+  - safe to keep behind a minimal compatibility shell
+- the team has a written decision for `packages/runtime_core/kernel_host.py`:
+  - retire the class
+  - or keep an ultra-thin compatibility shell
+- `__getattr__` deletion conditions are explicit and testable
+- runtime assembly no longer adds new `get_legacy_host()` consumers
+
+### Risks
+
+- low-frequency helper cleanup is mistaken for the real class-level retirement decision
+- debug and inspection use-cases are pushed back into the kernel instead of explicit surfaces
+- the class is deleted before facade coverage and migration tests are sufficient
+
