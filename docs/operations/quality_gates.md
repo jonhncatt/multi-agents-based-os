@@ -48,6 +48,8 @@ python scripts/demo_research_swarm.py --check
 Use `evals/cases.json` separately when you want the broader exploratory suite.
 Use [smoke_matrix.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/smoke_matrix.md) to decide whether a smoke belongs in baseline, module, Swarm, or release-only coverage.
 Use [evals/replay_samples/README.md](/Users/dalizhou/Desktop/new_validation_agent/evals/replay_samples/README.md) when promoting replayable scenarios into future release gates.
+Use [platform_operations_overview.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.md) as the single operations entry before drilling into individual docs or artifacts.
+Use [platform_reporting_template.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.md) when preparing status updates.
 
 ## CI Behavior
 

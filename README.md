@@ -203,6 +203,8 @@ CI 会在 push / pull request 上运行：
 - `evals/cases.json` 保留为更大的探索回归集合
 - compatibility shim 变更会被 platform boundary gate 检查，要求同步更新 shim 台账和退场计划
 - 平台里程碑指标会产出到 `artifacts/platform_metrics/latest.json`
+- 平台运营单一入口见：[docs/operations/platform_operations_overview.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.md)
+- 固定汇报模板见：[docs/operations/platform_reporting_template.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.md)
 
 门禁说明见：[docs/operations/quality_gates.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.md)
 
